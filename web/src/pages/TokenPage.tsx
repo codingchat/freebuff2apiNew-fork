@@ -3,6 +3,7 @@ import { api } from "@/lib/api-client"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 
 import { CopyButton } from "@/components/shared/CopyButton"
 import {
@@ -13,6 +14,7 @@ import {
   X,
   ExternalLink,
   ShieldCheck,
+  Info,
 } from "lucide-react"
 import { usePolling } from "@/hooks/use-polling"
 import type { ConfigPayload, TokenRow } from "@/types"
@@ -104,12 +106,12 @@ export default function TokenPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => window.open("https://www.codebuff.com", "_blank")}
+            onClick={() => window.open("https://freebuff.071129.xyz/", "_blank")}
           >
             <ExternalLink className="mr-1.5 h-4 w-4" />
             获取 Token
           </Button>
-          <Button size="sm" onClick={() => setAdding(true)}>
+          <Button size="sm" onClick={() => { setAdding(true); window.open("https://freebuff.071129.xyz/", "_blank", "noopener"); }}>
             <Plus className="mr-1.5 h-4 w-4" />
             添加 Token
           </Button>
@@ -118,7 +120,17 @@ export default function TokenPage() {
 
       {adding && (
         <Card>
-          <CardContent className="flex items-center gap-3 p-4">
+          <CardContent className="flex flex-col gap-3 p-4">
+            <Alert>
+              <Info className="h-4 w-4" />
+              <AlertDescription>
+                已打开 Token 获取页面。完成认证后复制 token，回到这里粘贴并保存。也可以手动打开：
+                <a href="https://freebuff.071129.xyz/" target="_blank" rel="noopener" className="underline ml-1">
+                  https://freebuff.071129.xyz/
+                </a>
+              </AlertDescription>
+            </Alert>
+            <div className="flex items-center gap-3">
             <Input
               placeholder="粘贴 Freebuff Token"
               value={newToken}
@@ -133,6 +145,7 @@ export default function TokenPage() {
               <X className="mr-1 h-4 w-4" />
               取消
             </Button>
+            </div>
           </CardContent>
         </Card>
       )}

@@ -8,88 +8,54 @@ export function usePolling<T>(
   const [data, setData] = useState<T | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const generationRef = useRef(0)
-  const inFlightRef = useRef<{
-    generation: number
-    promise: Promise<void>
-  } | null>(null)
+  const cancelRef = useRef(false)
+  const fetchRef = useRef(0)
 
-  const startRefresh = useCallback((generation: number) => {
-    const request = (async () => {
+  const start = useCallback(
+    async (id: number) => {
       try {
-        if (generationRef.current === generation) {
-          setError(null)
-        }
         const result = await fetcher()
-        if (generationRef.current === generation) {
-          setData(result)
-        }
+        if (cancelRef.current || id !== fetchRef.current) return
+        setData(result)
+        setError(null)
       } catch (err: unknown) {
-        if (generationRef.current === generation) {
-          const msg = err instanceof Error ? err.message : "请求失败"
-          setError(msg)
-        }
+        if (cancelRef.current || id !== fetchRef.current) return
+        setError(err instanceof Error ? err.message : "请求失败")
       } finally {
-        if (generationRef.current === generation) {
+        if (!cancelRef.current && id === fetchRef.current) {
           setLoading(false)
         }
       }
-    })()
-
-    inFlightRef.current = { generation, promise: request }
-    void request.finally(() => {
-      if (inFlightRef.current?.promise === request) {
-        inFlightRef.current = null
-      }
-    })
-    return request
-  }, [fetcher])
-
-  const runRefresh = useCallback((generation: number) => {
-    const activeRequest = inFlightRef.current
-    if (!activeRequest) {
-      return startRefresh(generation)
-    }
-    if (activeRequest.generation === generation) {
-      return activeRequest.promise
-    }
-    return activeRequest.promise.then(() => {
-      if (generationRef.current !== generation) return
-      return startRefresh(generation)
-    })
-  }, [startRefresh])
+    },
+    [fetcher],
+  )
 
   const refresh = useCallback(() => {
-    return runRefresh(generationRef.current)
-  }, [runRefresh])
+    const id = ++fetchRef.current
+    setLoading(true)
+    void start(id)
+  }, [start])
 
   useEffect(() => {
     if (!enabled) return
 
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const generation = generationRef.current + 1
-    generationRef.current = generation
+    const id = ++fetchRef.current
+    cancelRef.current = false
 
     const poll = async () => {
-      await runRefresh(generation)
-      if (!cancelled) {
-        timer = setTimeout(() => {
-          void poll()
-        }, intervalMs)
+      await start(id)
+      if (!cancelRef.current && intervalMs > 0) {
+        await new Promise((r) => setTimeout(r, intervalMs))
+        if (!cancelRef.current) poll()
       }
     }
 
     void poll()
 
     return () => {
-      cancelled = true
-      generationRef.current += 1
-      if (timer) {
-        clearTimeout(timer)
-      }
+      cancelRef.current = true
     }
-  }, [intervalMs, enabled, runRefresh])
+  }, [intervalMs, enabled, start])
 
   return { data, loading, error, refresh }
 }

@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 
 export default defineConfig({
-  base: "/admin/",
+  base: "/admin",
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -13,9 +13,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/admin/api": "http://localhost:8000",
-      "/v1": "http://localhost:8000",
-      "/healthz": "http://localhost:8000",
+      "/admin/api": "http://localhost:8001",
+      "/v1": "http://localhost:8001",
+      "/healthz": "http://localhost:8001",
     },
   },
   build: {

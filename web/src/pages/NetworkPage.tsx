@@ -100,12 +100,49 @@ function ConnectivityCard({ items }: { items: ConnectivityItem[] }) {
 }
 
 export default function NetworkPage() {
-  const { data, loading, refresh } = usePolling(() => api.network(), 30000)
+  const { data, loading, error, refresh } = usePolling(() => api.network(), 0)
 
   const net: NetworkData | null = data
 
-  if (loading && !net) {
-    return <div className="py-20 text-center text-muted-foreground">检测中...</div>
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">网络检测</h1>
+            <p className="text-sm text-muted-foreground">正在探测网络环境...</p>
+          </div>
+        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 py-12">
+            <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground/50" />
+            <p className="text-sm text-muted-foreground">正在检测公网 IP 和连通性，请稍候（约需 5-15 秒）</p>
+            <Button size="sm" variant="outline" onClick={refresh}>
+              <RefreshCw className="mr-1.5 h-4 w-4" />
+              重新检测
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">网络检测</h1>
+            <p className="text-sm text-muted-foreground">公网信息与服务连通性</p>
+          </div>
+          <Button size="sm" variant="outline" onClick={refresh}>
+            <RefreshCw className="mr-1.5 h-4 w-4" />
+            重新检测
+          </Button>
+        </div>
+        <p className="py-12 text-center text-muted-foreground">检测失败: {error}</p>
+      </div>
+    )
   }
 
   if (!net) return null

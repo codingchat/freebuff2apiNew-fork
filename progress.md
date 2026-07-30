@@ -93,7 +93,38 @@ PR #3 合并内容（来自 qianze0628/main，4 commits）：
 
 回滚方式：git revert 本次 commit
 
-## 2026-06-24 - Task: admin API Key 页面 UI 优化
+## 2025-07-30 - Task: 后台管理前端迁移到 React 19 + TypeScript
+
+### What was done
+将管理面板从 Vue 3 单文件 SPA 迁移到 React 19 + TypeScript + Tailwind CSS v4 + shadcn/ui 风格组件。参考 kimi2api 项目的技术栈和 UI 设计，全部适配 freebuff2api 后端 API。创建10个管理页面：登录、概览、Token 管理、API Key、运行日志、请求记录、Env 查看、网络检测、模型测试、设置。
+
+### Testing
+- `tsc -b && vite build` 零错误，1962 modules transformed
+- `node --check admin_static/assets/index-Bt7sv0kt.js` 语法通过
+- `python3 -m py_compile admin.py` 语法通过
+- `python3 -m py_compile app.py` 语法通过
+- Code review 完成：发现并修复路径穿越漏洞和死代码
+
+### Notes
+改动文件清单：
+- `freebuff2api/admin.py` (修改) — SPA fallback 路由移到文件末尾，添加路径穿越防护
+- `freebuff2api/app.py` (修改) — 移除 StaticFiles mount 死代码
+- `freebuff2api/admin_static/` (替换) — Vue SPA → React 构建产物
+- `web/` (新增) — React 前端完整源码
+
+回滚方式：`git checkout -- freebuff2api/admin.py freebuff2api/app.py && rm -rf web/ freebuff2api/admin_static/`
+
+## 2025-07-30 - Task: 编写 README.md 并推送到新仓库
+
+### What was done
+编写详细的 README.md（含 badges、功能列表、部署指南、API 文档、模型列表、FAQ），创建新仓库 https://github.com/t479842598/freebuff2apiNew.git 并推送全部代码。
+
+### Testing
+- `git push -u origin main` 成功
+
+### Notes
+新仓库：https://github.com/t479842598/freebuff2apiNew
+Commit: e90382f
 
 ### What was done
 优化 API Key 管理页面：key 显示改为前4+****+后4 脱敏格式，新增一键复制完整 key 按钮，使用说明移至列表上方，列表居中显示，每行内联操作按钮（编辑/删除/启用开关）。后端 list_all 改为返回完整 key 供前端复制使用。

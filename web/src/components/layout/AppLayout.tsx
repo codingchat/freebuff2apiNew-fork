@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom"
+import { NavLink, Outlet, Navigate, useNavigate } from "react-router-dom"
 import { useAuth } from "@/hooks/use-auth"
 import { useDashboardTheme } from "@/components/theme/theme-context"
 import {
@@ -37,7 +37,7 @@ const themeIcons = {
 }
 
 export default function AppLayout() {
-  const { logout } = useAuth()
+  const { isAuthenticated, isLoading, logout } = useAuth()
   const navigate = useNavigate()
   const { mode, setMode, options } = useDashboardTheme()
 
@@ -53,6 +53,18 @@ export default function AppLayout() {
   }
 
   const ThemeIcon = themeIcons[mode] || Monitor
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <p className="text-muted-foreground">加载中...</p>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/admin/login" replace />
+  }
 
   return (
     <div className="admin-shell flex h-screen overflow-hidden bg-background">
