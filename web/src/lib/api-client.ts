@@ -183,6 +183,19 @@ export const api = {
       body: JSON.stringify({ admin_key: adminKey }),
     }),
 
+  // Proxy
+  saveProxy: (payload: { proxy_enabled: boolean; proxy_type: string; proxy_host: string; proxy_port: number; proxy_username?: string; proxy_password?: string }) =>
+    request<ConfigPayload>("/proxy", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  testProxy: (payload: { proxy_type: string; proxy_host: string; proxy_port: number; proxy_username?: string; proxy_password?: string }) =>
+    request<{ ok: boolean; ip?: string; country?: string; city?: string; org?: string; latency_ms?: number; error?: string }>("/proxy/test", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   // Model Test
   chatTest: (model: string, prompt: string) =>
     request<ChatTestResult>("/chat-test", {

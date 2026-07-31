@@ -24,7 +24,11 @@ export interface ConfigPayload {
   debug: boolean
   log_level: string
   proxy_enabled: boolean
-  proxy_url: string
+  proxy_type: string
+  proxy_host: string
+  proxy_port: number
+  proxy_username: string
+  proxy_display: string
   base_url: string
   port: number
 }
@@ -106,7 +110,7 @@ export interface NetworkData {
   region: RegionInfo
   connectivity: ConnectivityItem[]
   proxy_enabled: boolean
-  proxy_url: string
+  proxy_display: string
 }
 
 export interface TokenDetail {

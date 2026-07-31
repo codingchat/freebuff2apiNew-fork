@@ -113,7 +113,11 @@ def _config_payload(settings: Settings) -> dict[str, Any]:
         "debug": settings.debug,
         "log_level": settings.log_level,
         "proxy_enabled": settings.proxy_enabled,
-        "proxy_url": _mask(settings.proxy_url, keep=10),
+        "proxy_type": settings.proxy_type,
+        "proxy_host": settings.proxy_host,
+        "proxy_port": settings.proxy_port,
+        "proxy_username": settings.proxy_username or "",
+        "proxy_has_auth": bool(settings.proxy_username),
         "base_url": settings.codebuff_api_url,
         "port": settings.port,
     }
@@ -374,7 +378,7 @@ async def network(request: Request) -> dict[str, Any]:
             "region": region,
             "connectivity": connectivity,
             "proxy_enabled": settings.proxy_enabled,
-            "proxy_url": _mask(settings.proxy_url, keep=10),
+            "proxy_display": f"{settings.proxy_type}://{settings.proxy_host}:{settings.proxy_port}" if settings.proxy_host else "",
         }
     )
 
@@ -497,6 +501,94 @@ async def save_security(request: Request) -> JSONResponse:
     )
     response.delete_cookie(COOKIE_NAME)
     return response
+
+
+# ── Proxy Configuration ──────────────────────────────────────────────
+
+@router.put("/admin/api/proxy")
+async def save_proxy(request: Request) -> dict[str, Any]:
+    _check_admin_auth(request)
+    body = await request.json()
+    proxy_enabled = bool(body.get("proxy_enabled", False))
+    proxy_type = str(body.get("proxy_type") or "socks5").strip() or "socks5"
+    proxy_host = str(body.get("proxy_host") or "").strip()
+    proxy_port = int(body.get("proxy_port") or 1080)
+    proxy_username = str(body.get("proxy_username") or "").strip() or None
+    proxy_password = str(body.get("proxy_password") or "").strip() or None
+
+    if proxy_enabled and not proxy_host:
+        raise HTTPException(status_code=400, detail="proxy_host is required when enabled")
+
+    old_settings = _settings(request)
+    new_settings = replace(
+        old_settings,
+        proxy_enabled=proxy_enabled,
+        proxy_type=proxy_type,
+        proxy_host=proxy_host,
+        proxy_port=proxy_port,
+        proxy_username=proxy_username,
+        proxy_password=proxy_password,
+    )
+    if not _is_vercel():
+        write_env_values({
+            "FREEBUFF_PROXY_ENABLED": "true" if proxy_enabled else "false",
+            "FREEBUFF_PROXY_TYPE": proxy_type,
+            "FREEBUFF_PROXY_HOST": proxy_host,
+            "FREEBUFF_PROXY_PORT": str(proxy_port),
+            "FREEBUFF_PROXY_USERNAME": proxy_username or "",
+            "FREEBUFF_PROXY_PASSWORD": proxy_password or "",
+        })
+    _apply_env({
+        "FREEBUFF_PROXY_ENABLED": "true" if proxy_enabled else "false",
+        "FREEBUFF_PROXY_TYPE": proxy_type,
+        "FREEBUFF_PROXY_HOST": proxy_host,
+        "FREEBUFF_PROXY_PORT": str(proxy_port),
+        "FREEBUFF_PROXY_USERNAME": proxy_username or "",
+        "FREEBUFF_PROXY_PASSWORD": proxy_password or "",
+    })
+    request.app.state.settings = new_settings
+    return _api_ok(
+        {**_config_payload(new_settings), "persisted": not _is_vercel()},
+        "proxy config saved",
+    )
+
+
+@router.post("/admin/api/proxy/test")
+async def test_proxy(request: Request) -> dict[str, Any]:
+    _check_admin_auth(request)
+    body = await request.json()
+    proxy_type = str(body.get("proxy_type") or "socks5").strip() or "socks5"
+    proxy_host = str(body.get("proxy_host") or "").strip()
+    proxy_port = int(body.get("proxy_port") or 1080)
+    proxy_username = str(body.get("proxy_username") or "").strip() or ""
+    proxy_password = str(body.get("proxy_password") or "").strip() or ""
+
+    if not proxy_host:
+        raise HTTPException(status_code=400, detail="proxy_host is required")
+
+    auth = f"{proxy_username}:{proxy_password}@" if proxy_username else ""
+    proxy_url = f"{proxy_type}://{auth}{proxy_host}:{proxy_port}"
+
+    import httpx
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0),
+        follow_redirects=True,
+        proxy=proxy_url,
+        trust_env=False,
+    ) as client:
+        try:
+            r = await client.get("https://ipapi.co/json/")
+            data = r.json()
+            return _api_ok({
+                "ok": True,
+                "ip": data.get("ip"),
+                "country": data.get("country_name"),
+                "city": data.get("city"),
+                "org": data.get("org"),
+                "latency_ms": round(r.elapsed.total_seconds() * 1000),
+            })
+        except Exception as e:
+            return _api_ok({"ok": False, "error": str(e)})
 
 
 @router.post("/admin/api/chat-test")

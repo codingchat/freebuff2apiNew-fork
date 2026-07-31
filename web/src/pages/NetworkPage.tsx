@@ -171,8 +171,8 @@ export default function NetworkPage() {
             <span>
               代理: {net.proxy_enabled ? "已启用" : "未启用"}
             </span>
-            {net.proxy_enabled && net.proxy_url && (
-              <span className="font-mono text-xs">{net.proxy_url}</span>
+            {net.proxy_enabled && net.proxy_display && (
+              <span className="font-mono text-xs">{net.proxy_display}</span>
             )}
           </div>
         </CardContent>

@@ -39,7 +39,11 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8000
     proxy_enabled: bool = False
-    proxy_url: str | None = None
+    proxy_type: str = "socks5"
+    proxy_host: str = ""
+    proxy_port: int = 1080
+    proxy_username: str | None = None
+    proxy_password: str | None = None
     timezone: str = "Asia/Shanghai"
     locale: str = "zh-CN"
     os_name: str = "windows"
@@ -59,9 +63,12 @@ class Settings:
     def upstream_proxy_url(self) -> str | None:
         if not self.proxy_enabled:
             return None
-        if not self.proxy_url:
+        if not self.proxy_host:
             return None
-        return self.proxy_url.strip() or None
+        auth = ""
+        if self.proxy_username:
+            auth = f"{self.proxy_username}:{self.proxy_password or ''}@"
+        return f"{self.proxy_type}://{auth}{self.proxy_host}:{self.proxy_port}"
 
     @property
     def codebuff_tokens(self) -> tuple[str, ...]:
@@ -120,7 +127,11 @@ def load_settings() -> Settings:
         host=os.getenv("FREEBUFF_HOST", "0.0.0.0"),
         port=_int("FREEBUFF_PORT", 8000),
         proxy_enabled=_bool("FREEBUFF_PROXY_ENABLED", False),
-        proxy_url=os.getenv("FREEBUFF_PROXY_URL"),
+        proxy_type=os.getenv("FREEBUFF_PROXY_TYPE", "socks5"),
+        proxy_host=os.getenv("FREEBUFF_PROXY_HOST", ""),
+        proxy_port=_int("FREEBUFF_PROXY_PORT", 1080),
+        proxy_username=os.getenv("FREEBUFF_PROXY_USERNAME"),
+        proxy_password=os.getenv("FREEBUFF_PROXY_PASSWORD"),
         timezone=os.getenv("FREEBUFF_TIMEZONE", "Asia/Shanghai"),
         locale=os.getenv("FREEBUFF_LOCALE", "zh-CN"),
         os_name=os.getenv("FREEBUFF_OS", "windows"),

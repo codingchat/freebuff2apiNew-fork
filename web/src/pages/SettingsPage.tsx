@@ -4,8 +4,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { ShieldCheck, Info, Check } from "lucide-react"
+import { ShieldCheck, Info, Check, Globe, ToggleLeft, ToggleRight, Loader2, AlertTriangle } from "lucide-react"
 import { usePolling } from "@/hooks/use-polling"
 import type { ConfigPayload } from "@/types"
 
@@ -15,6 +22,19 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false)
   const [success, setSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Proxy state
+  const [proxyType, setProxyType] = useState("socks5")
+  const [proxyHost, setProxyHost] = useState("")
+  const [proxyPort, setProxyPort] = useState("1080")
+  const [proxyUsername, setProxyUsername] = useState("")
+  const [proxyPassword, setProxyPassword] = useState("")
+  const [proxyBusy, setProxyBusy] = useState(false)
+  const [proxySuccess, setProxySuccess] = useState(false)
+  const [proxyError, setProxyError] = useState<string | null>(null)
+  const [testResult, setTestResult] = useState<{ ok: boolean; ip?: string; country?: string; city?: string; org?: string; latency_ms?: number; error?: string } | null>(null)
+  const [testBusy, setTestBusy] = useState(false)
+  const [authOpen, setAuthOpen] = useState(false)
 
   const config: ConfigPayload | null = data
 
@@ -39,13 +59,80 @@ export default function SettingsPage() {
     }
   }, [adminKey, refresh])
 
+  const handleSaveProxy = useCallback(async () => {
+    if (!proxyHost.trim()) {
+      setProxyError("请填写代理地址")
+      return
+    }
+    setProxyBusy(true)
+    setProxyError(null)
+    setProxySuccess(false)
+    try {
+      await api.saveProxy({
+        proxy_enabled: proxyHost.trim().length > 0,
+        proxy_type: proxyType,
+        proxy_host: proxyHost.trim(),
+        proxy_port: parseInt(proxyPort) || 1080,
+        proxy_username: proxyUsername.trim() || undefined,
+        proxy_password: proxyPassword || undefined,
+      })
+      setProxySuccess(true)
+      refresh()
+      setTimeout(() => setProxySuccess(false), 3000)
+    } catch (err: unknown) {
+      setProxyError(err instanceof Error ? err.message : "保存失败")
+    } finally {
+      setProxyBusy(false)
+    }
+  }, [proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword, refresh])
+
+  const handleTestProxy = useCallback(async () => {
+    if (!proxyHost.trim()) {
+      setProxyError("请先填写代理地址")
+      return
+    }
+    setTestBusy(true)
+    setTestResult(null)
+    setProxyError(null)
+    try {
+      const r = await api.testProxy({
+        proxy_type: proxyType,
+        proxy_host: proxyHost.trim(),
+        proxy_port: parseInt(proxyPort) || 1080,
+        proxy_username: proxyUsername.trim() || undefined,
+        proxy_password: proxyPassword || undefined,
+      })
+      setTestResult(r)
+    } catch (err: unknown) {
+      setTestResult({ ok: false, error: err instanceof Error ? err.message : "测试失败" })
+    } finally {
+      setTestBusy(false)
+    }
+  }, [proxyType, proxyHost, proxyPort, proxyUsername, proxyPassword])
+
+  const handleToggle = () => {
+    setProxyBusy(true)
+    const enabled = !config?.proxy_enabled
+    api.saveProxy({
+      proxy_enabled: enabled,
+      proxy_type: config?.proxy_type || proxyType || "socks5",
+      proxy_host: config?.proxy_host || proxyHost || "",
+      proxy_port: config?.proxy_port || parseInt(proxyPort) || 1080,
+      proxy_username: (config?.proxy_username || proxyUsername?.trim()) || undefined,
+      proxy_password: proxyPassword || undefined,
+    }).then(() => { refresh(); setProxyBusy(false) }).catch(() => setProxyBusy(false))
+  }
+
+  const proxyEnabled = config?.proxy_enabled ?? false
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
-        <p className="text-sm text-muted-foreground">修改管理员密钥等配置</p>
+        <p className="text-sm text-muted-foreground">修改管理员密钥与代理配置</p>
       </div>
 
+      {/* Admin Key */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
@@ -87,6 +174,134 @@ export default function SettingsPage() {
           )}
           {error && (
             <p className="text-sm text-destructive">{error}</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Proxy Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Globe className="h-4 w-4" />
+            代理配置
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex items-center gap-2">
+            <button onClick={handleToggle} className="flex items-center gap-1 text-sm" disabled={proxyBusy}>
+              {proxyEnabled ? (
+                <ToggleRight className="h-6 w-6 text-primary" />
+              ) : (
+                <ToggleLeft className="h-6 w-6 text-muted-foreground" />
+              )}
+            </button>
+            <span className="text-sm">
+              代理: <Badge variant={proxyEnabled ? "default" : "secondary"}>{proxyEnabled ? "已启用" : "已禁用"}</Badge>
+            </span>
+            {proxyEnabled && config?.proxy_display && (
+              <span className="font-mono text-xs text-muted-foreground">{config.proxy_display}</span>
+            )}
+          </div>
+
+          <div className="flex gap-2">
+            <Select value={proxyType} onValueChange={(v) => setProxyType(v ?? "socks5")}>
+              <SelectTrigger className="w-28">
+                <SelectValue placeholder="类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="socks5">socks5</SelectItem>
+                <SelectItem value="socks5h">socks5h</SelectItem>
+                <SelectItem value="http">http</SelectItem>
+                <SelectItem value="https">https</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              placeholder="主机地址"
+              value={proxyHost}
+              onChange={(e) => setProxyHost(e.target.value)}
+              className="flex-1 font-mono text-sm"
+            />
+            <Input
+              placeholder="端口"
+              value={proxyPort}
+              onChange={(e) => setProxyPort(e.target.value)}
+              className="w-24 font-mono text-sm"
+            />
+          </div>
+
+          {/* Auth toggle */}
+          {!authOpen ? (
+            <button
+              onClick={() => setAuthOpen(true)}
+              className="text-sm text-muted-foreground hover:text-foreground text-left w-fit"
+            >
+              + 添加认证（可选）
+            </button>
+          ) : (
+            <div className="flex gap-2">
+              <Input
+                placeholder="用户名（可选）"
+                value={proxyUsername}
+                onChange={(e) => setProxyUsername(e.target.value)}
+                className="flex-1 font-mono text-sm"
+              />
+              <Input
+                type="password"
+                placeholder="密码（可选）"
+                value={proxyPassword}
+                onChange={(e) => setProxyPassword(e.target.value)}
+                className="flex-1 font-mono text-sm"
+              />
+              <Button size="sm" variant="ghost" onClick={() => { setAuthOpen(false); setProxyUsername(""); setProxyPassword("") }}>
+                移除
+              </Button>
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <Button size="sm" onClick={handleSaveProxy} disabled={proxyBusy}>
+              {proxyBusy ? "保存中..." : "保存"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={handleTestProxy} disabled={testBusy}>
+              {testBusy ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <Globe className="mr-1.5 h-4 w-4" />
+              )}
+              测试代理
+            </Button>
+          </div>
+
+          {proxySuccess && (
+            <div className="flex items-center gap-2 text-sm text-green-600">
+              <Check className="h-4 w-4" />代理配置已保存
+            </div>
+          )}
+          {proxyError && (
+            <div className="flex items-center gap-2 text-sm text-destructive">
+              <AlertTriangle className="h-4 w-4" />{proxyError}
+            </div>
+          )}
+
+          {testResult && (
+            <Card className="bg-muted/50">
+              <CardContent className="p-4">
+                {testResult.ok ? (
+                  <div className="grid gap-2 sm:grid-cols-2 text-sm">
+                    {testResult.ip && <div><span className="text-muted-foreground">IP:</span> <span className="font-mono">{testResult.ip}</span></div>}
+                    {testResult.country && <div><span className="text-muted-foreground">国家:</span> {testResult.country}</div>}
+                    {testResult.city && <div><span className="text-muted-foreground">城市:</span> {testResult.city}</div>}
+                    {testResult.org && <div><span className="text-muted-foreground">运营商:</span> {testResult.org}</div>}
+                    {testResult.latency_ms !== undefined && <div><span className="text-muted-foreground">延迟:</span> <span className="font-mono">{testResult.latency_ms}ms</span></div>}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm text-destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    代理测试失败: {testResult.error}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           )}
         </CardContent>
       </Card>
