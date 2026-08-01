@@ -42,6 +42,23 @@
 
 ---
 
+## 📝 更新日志
+
+### v0.1.1（2026-08-01）— 🐛 修复上游 403 `free_mode_cli_required`
+
+**问题**：直接调用 Freebuff API 时返回 `403 free_mode_cli_required`（"Free mode is only available through the freebuff CLI"），导致所有模型无法使用。
+
+**根因**：上游服务端会校验 chat/completions 请求体中的 system 提示词是否为 CLI 的真实 Buffy 提示词（`"You are Buffy, the strategic coding assistant...Freebuff..."`）。旧版使用伪造的 `"You are Buffy. [System Override...]"` 前缀，被服务端识别为非 CLI 请求后拒绝。
+
+**修复**：
+
+- 新增 `freebuff2api/buffy_prompt.py`：从 freebuff CLI 二进制（v0.0.135）提取的真实 Buffy 系统提示词模板，日期动态生成
+- `openai_compat.py`：`normalize_chat_messages` 始终在第一条 system 消息注入真实 Buffy 提示词（用户自定义 system 内容追加在其后，不再覆盖）
+- `codebuff.py`：chat 请求 User-Agent 版本 `ai-sdk/provider-utils/3.0.20` → `3.0.25`（与 CLI 一致）
+
+**验证**：端到端实测 session → agent-runs → chat/completions 返回 200 + SSE 流式响应，测试套件零回归。
+
+
 ## 🚀 快速开始
 
 ### 环境要求
@@ -359,6 +376,7 @@ freebuff2apiNew/
 │   ├── codebuff.py        # Freebuff 上游客户端
 │   ├── config.py          # 配置加载
 │   ├── models.py          # 模型定义
+│   ├── buffy_prompt.py    # 🐝 真实 Buffy system 提示词（上游校验必需）
 │   ├── openai_compat.py   # OpenAI 格式兼容层
 │   ├── anthropic_compat.py # Anthropic 格式兼容层
 │   ├── usage.py           # 数据模型
