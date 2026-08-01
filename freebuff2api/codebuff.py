@@ -754,6 +754,11 @@ class CodebuffAccountPool:
         return len(self._accounts)
 
     @property
+    def active_request_count(self) -> int:
+        """Number of in-flight requests across all accounts (for deferred close)."""
+        return sum(account.active_requests for account in self._accounts)
+
+    @property
     def default_client(self) -> CodebuffClient:
         return self._accounts[0].client
 

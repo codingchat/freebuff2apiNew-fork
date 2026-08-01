@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import hmac
 import json
+import logging
 import os
 import time
 from dataclasses import replace
@@ -171,7 +172,23 @@ async def _replace_accounts(request: Request, settings: Settings) -> None:
     request.app.state.rotation = new_accounts.rotation
     request.app.state.codebuff = new_accounts.default_client
     request.app.state.sessions = new_accounts.default_sessions
-    await old_accounts.aclose()
+    # Do NOT close the old pool immediately: in-flight streaming requests still
+    # hold the old httpx clients. Close it in the background once those finish,
+    # so updating tokens mid-request never interrupts active calls.
+    asyncio.create_task(_close_pool_when_idle(old_accounts))
+
+
+async def _close_pool_when_idle(pool: CodebuffAccountPool) -> None:
+    """Wait for all in-flight requests on the pool to finish, then close it."""
+    try:
+        while pool.active_request_count > 0:
+            await asyncio.sleep(0.5)
+        await pool.aclose()
+        logger.info("old account pool closed after all requests finished")
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("failed to close old account pool")
 
 
 def _tokens(settings: Settings) -> list[str]:

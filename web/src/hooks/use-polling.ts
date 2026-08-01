@@ -10,25 +10,27 @@ export function usePolling<T>(
   const [error, setError] = useState<string | null>(null)
   const cancelRef = useRef(false)
   const fetchRef = useRef(0)
+  // Keep the fetcher in a ref so `start` stays stable across renders. An inline
+  // arrow fetcher (e.g. `() => api.config()`) would otherwise change identity on
+  // every render, restarting the polling effect and racing `refresh()` results.
+  const fetcherRef = useRef(fetcher)
+  fetcherRef.current = fetcher
 
-  const start = useCallback(
-    async (id: number) => {
-      try {
-        const result = await fetcher()
-        if (cancelRef.current || id !== fetchRef.current) return
-        setData(result)
-        setError(null)
-      } catch (err: unknown) {
-        if (cancelRef.current || id !== fetchRef.current) return
-        setError(err instanceof Error ? err.message : "请求失败")
-      } finally {
-        if (!cancelRef.current && id === fetchRef.current) {
-          setLoading(false)
-        }
+  const start = useCallback(async (id: number) => {
+    try {
+      const result = await fetcherRef.current()
+      if (cancelRef.current || id !== fetchRef.current) return
+      setData(result)
+      setError(null)
+    } catch (err: unknown) {
+      if (cancelRef.current || id !== fetchRef.current) return
+      setError(err instanceof Error ? err.message : "请求失败")
+    } finally {
+      if (!cancelRef.current && id === fetchRef.current) {
+        setLoading(false)
       }
-    },
-    [fetcher],
-  )
+    }
+  }, [])
 
   const refresh = useCallback(() => {
     const id = ++fetchRef.current
