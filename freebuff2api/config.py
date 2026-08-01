@@ -50,6 +50,7 @@ class Settings:
     system_prompt_override: str | None = None
     api_keys_json: str | None = None
     max_request_records: int = 5000
+    max_concurrency_per_account: int = 1
 
     @property
     def codebuff_api_url(self) -> str:
@@ -138,6 +139,7 @@ def load_settings() -> Settings:
         system_prompt_override=os.getenv("FREEBUFF_SYSTEM_PROMPT_OVERRIDE"),
         api_keys_json=os.getenv("FREEBUFF_API_KEYS"),
         max_request_records=_int("FREEBUFF_MAX_REQUEST_RECORDS", 5000),
+        max_concurrency_per_account=_int("FREEBUFF_ACCOUNT_CONCURRENCY", 1),
     )
 
 

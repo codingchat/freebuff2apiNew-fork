@@ -9,6 +9,7 @@ import type {
   NetworkData,
   TokenDetail,
   TokenVerifyResult,
+  RotationInfo,
   ApiKeysData,
   ApiKeyItem,
   RequestsData,
@@ -127,6 +128,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ token }),
     }),
+
+  // Account rotation / health
+  rotateTokens: () =>
+    request<RotationInfo>("/tokens/rotate", { method: "POST" }),
+
+  activateToken: (index: number) =>
+    request<RotationInfo>(`/tokens/activate/${index}`, { method: "POST" }),
+
+  validateTokens: () =>
+    request<RotationInfo>("/tokens/validate", { method: "POST" }),
 
   // API Keys
   getKeys: () => request<ApiKeysData>("/api-keys"),

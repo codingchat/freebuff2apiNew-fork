@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import hmac
 import json
@@ -17,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from .codebuff import CodebuffAccountPool, CodebuffClient, CodebuffError
 from .config import DEFAULT_ADMIN_KEY, Settings, project_env_path, write_env_values
 from .logging_config import get_buffered_logs
-from .models import DEFAULT_MODEL, models_response
+from .models import ALL_MODELS, DEFAULT_MODEL, models_response
 from .usage import ApiKeyRecord
 from .usage_store import ApiKeyStore, RequestStore
 
@@ -98,9 +99,29 @@ def _token_rows(settings: Settings) -> list[dict[str, Any]]:
     return rows
 
 
-def _config_payload(settings: Settings) -> dict[str, Any]:
-    using_default_admin_key = settings.admin_key == DEFAULT_ADMIN_KEY
+def _rotation_payload(request: Request) -> dict[str, Any]:
+    """Account pool health + rotation status for the admin panel."""
+    accounts: CodebuffAccountPool = request.app.state.accounts
+    rotation = accounts.rotation
     return {
+        "current_index": rotation.current_index + 1 if rotation.account_count else 0,
+        "total_rotations": rotation.total_rotations,
+        "last_429_time": rotation.last_429_time,
+        "last_429_account": (
+            rotation.last_429_account + 1
+            if rotation.last_429_account is not None
+            else None
+        ),
+        "last_429_info": rotation.last_429_info,
+        "all_blocked": rotation.all_blocked,
+        "available_count": rotation.available_count,
+        "accounts": accounts.account_statuses(),
+    }
+
+
+def _config_payload(settings: Settings, request: Request | None = None) -> dict[str, Any]:
+    using_default_admin_key = settings.admin_key == DEFAULT_ADMIN_KEY
+    payload: dict[str, Any] = {
         "environment": "vercel" if _is_vercel() else "local",
         "token_count": len(settings.codebuff_tokens),
         "tokens": _token_rows(settings),
@@ -121,6 +142,13 @@ def _config_payload(settings: Settings) -> dict[str, Any]:
         "base_url": settings.codebuff_api_url,
         "port": settings.port,
     }
+    if request is not None:
+        payload["accounts"] = request.app.state.accounts.account_statuses()
+        payload["rotation"] = _rotation_payload(request)
+    else:
+        payload["accounts"] = []
+        payload["rotation"] = None
+    return payload
 
 
 def _api_ok(data: dict[str, Any] | list[Any] | None = None, msg: str = "ok") -> dict[str, Any]:
@@ -140,6 +168,7 @@ async def _replace_accounts(request: Request, settings: Settings) -> None:
     new_accounts = CodebuffAccountPool(settings)
     request.app.state.settings = settings
     request.app.state.accounts = new_accounts
+    request.app.state.rotation = new_accounts.rotation
     request.app.state.codebuff = new_accounts.default_client
     request.app.state.sessions = new_accounts.default_sessions
     await old_accounts.aclose()
@@ -159,7 +188,7 @@ async def _save_token_list(request: Request, tokens: list[str]) -> dict[str, Any
     _apply_env({"FREEBUFF_TOKEN": token_value or None})
     await _replace_accounts(request, new_settings)
     return {
-        **_config_payload(new_settings),
+        **_config_payload(new_settings, request),
         "persisted": not _is_vercel(),
         "env": f"FREEBUFF_TOKEN={token_value}",
     }
@@ -179,7 +208,7 @@ async def login(request: Request) -> JSONResponse:
         raise HTTPException(status_code=503, detail="Set FREEBUFF_ADMIN_KEY first")
     if not hmac.compare_digest(key, expected):
         raise HTTPException(status_code=401, detail="Invalid admin key")
-    response = JSONResponse(_api_ok(_config_payload(_settings(request))))
+    response = JSONResponse(_api_ok(_config_payload(_settings(request), request)))
     response.set_cookie(
         COOKIE_NAME,
         _cookie_value(_admin_secret(_settings(request)) or expected),
@@ -292,15 +321,23 @@ async def session_status(request: Request) -> dict[str, Any]:
 async def overview(request: Request) -> dict[str, Any]:
     _check_admin_auth(request)
     settings = _settings(request)
+    accounts: CodebuffAccountPool = request.app.state.accounts
+    model_ids = [model.id for model in ALL_MODELS]
+    model_availability = (
+        accounts.rotation.model_availability(model_ids)
+        if accounts.rotation is not None
+        else []
+    )
     return _api_ok(
         {
             "status": "ok",
             "environment": "vercel" if _is_vercel() else "local",
-            "account_count": request.app.state.accounts.account_count,
+            "account_count": accounts.account_count,
             "model_count": len(models_response()["data"]),
             "base_url": settings.codebuff_api_url,
             "debug": settings.debug,
             "log_level": settings.log_level,
+            "model_availability": model_availability,
         }
     )
 
@@ -308,7 +345,7 @@ async def overview(request: Request) -> dict[str, Any]:
 @router.get("/admin/api/config")
 async def config(request: Request) -> dict[str, Any]:
     _check_admin_auth(request)
-    return _api_ok(_config_payload(_settings(request)))
+    return _api_ok(_config_payload(_settings(request), request))
 
 
 @router.get("/admin/api/env")
@@ -455,6 +492,36 @@ async def delete_token(request: Request, index: int) -> dict[str, Any]:
     return _api_ok(await _save_token_list(request, tokens), "token deleted")
 
 
+@router.post("/admin/api/tokens/rotate")
+async def rotate_tokens(request: Request) -> dict[str, Any]:
+    _check_admin_auth(request)
+    accounts: CodebuffAccountPool = request.app.state.accounts
+    index = accounts.manual_rotate()
+    return _api_ok(
+        _rotation_payload(request),
+        f"rotated to account {index + 1}",
+    )
+
+
+@router.post("/admin/api/tokens/activate/{index}")
+async def activate_token(request: Request, index: int) -> dict[str, Any]:
+    _check_admin_auth(request)
+    accounts: CodebuffAccountPool = request.app.state.accounts
+    try:
+        accounts.set_active(index)
+    except IndexError:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return _api_ok(_rotation_payload(request), f"active account {index}")
+
+
+@router.post("/admin/api/tokens/validate")
+async def validate_tokens(request: Request) -> dict[str, Any]:
+    _check_admin_auth(request)
+    accounts: CodebuffAccountPool = request.app.state.accounts
+    await accounts.validate_accounts()
+    return _api_ok(_rotation_payload(request), "validation done")
+
+
 @router.put("/admin/api/api-key")
 async def save_api_key(request: Request) -> dict[str, Any]:
     _check_admin_auth(request)
@@ -468,7 +535,7 @@ async def save_api_key(request: Request) -> dict[str, Any]:
     _apply_env({"FREEBUFF_API_KEY": api_key})
     request.app.state.settings = new_settings
     return _api_ok(
-        {**_config_payload(new_settings), "persisted": not _is_vercel()},
+        {**_config_payload(new_settings, request), "persisted": not _is_vercel()},
         "api key saved",
     )
 
@@ -493,7 +560,7 @@ async def save_security(request: Request) -> JSONResponse:
     response = JSONResponse(
         _api_ok(
             {
-                **_config_payload(new_settings),
+                **_config_payload(new_settings, request),
                 "persisted": not _is_vercel(),
             },
             "security saved",
@@ -548,7 +615,7 @@ async def save_proxy(request: Request) -> dict[str, Any]:
     })
     request.app.state.settings = new_settings
     return _api_ok(
-        {**_config_payload(new_settings), "persisted": not _is_vercel()},
+        {**_config_payload(new_settings, request), "persisted": not _is_vercel()},
         "proxy config saved",
     )
 

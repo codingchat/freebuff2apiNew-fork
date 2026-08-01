@@ -4,6 +4,11 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from freebuff2api.app import app
+from freebuff2api.codebuff import CodebuffAccountPool
+
+# lifespan 会后台启动 validate_accounts 并真实请求上游验证 token；
+# 单元测试里 patch 成 no-op，避免网络依赖导致测试挂起。
+CodebuffAccountPool.validate_accounts = AsyncMock(return_value=None)
 
 
 class AdminTests(unittest.TestCase):
@@ -11,10 +16,8 @@ class AdminTests(unittest.TestCase):
         response = TestClient(app).get("/admin")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("freebuff2api 管理面板", response.text)
-        self.assertIn("naive-ui", response.text)
-        self.assertIn("自动刷新", response.text)
-        self.assertIn("syncLogAutoRefresh", response.text)
+        self.assertIn("Freebuff2API Dashboard", response.text)
+        self.assertIn('id="root"', response.text)
 
     def test_root_redirects_to_admin(self) -> None:
         response = TestClient(app).get("/", follow_redirects=False)

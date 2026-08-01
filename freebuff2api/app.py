@@ -25,6 +25,7 @@ from .codebuff import (
 )
 from .config import Settings, load_settings
 from .logging_config import configure_logging, redact_headers, render_debug
+from .token_rotation import parse_429_info
 from .openai_compat import (
     CompletionAccumulator,
     build_upstream_payload,
@@ -63,14 +64,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     api_key_store.load_from_settings(settings.api_keys_json, settings.local_api_key)
     app.state.settings = settings
     app.state.accounts = accounts
+    app.state.rotation = accounts.rotation
     app.state.codebuff = accounts.default_client
     app.state.sessions = accounts.default_sessions
     app.state.request_store = request_store
     app.state.api_key_store = api_key_store
+    validation_task = asyncio.create_task(accounts.validate_accounts())
     logger.info("configured freebuff accounts count=%s api_keys=%s", accounts.account_count, api_key_store.total_count)
     try:
         yield
     finally:
+        validation_task.cancel()
         await accounts.aclose()
 
 
@@ -140,6 +144,11 @@ def _check_anthropic_auth(request: Request, *, require_configured: bool = False)
 
 def _error_response(error: Exception) -> JSONResponse:
     if isinstance(error, CodebuffError):
+        headers: dict[str, str] = {}
+        if error.status_code == 429:
+            retry_ms = parse_429_info(str(error)).get("retry_after_ms", 0)
+            if retry_ms:
+                headers["Retry-After"] = str(max(1, round(retry_ms / 1000)))
         return JSONResponse(
             status_code=error.status_code,
             content={
@@ -149,8 +158,17 @@ def _error_response(error: Exception) -> JSONResponse:
                     "code": "codebuff_error",
                 }
             },
+            headers=headers or None,
         )
     raise error
+
+
+def _handle_upstream_error(request: Request, account_index: int | None, error: Exception, model: str = "") -> None:
+    """Feed an upstream failure into the account rotation/health tracker."""
+    if not isinstance(error, CodebuffError) or account_index is None:
+        return
+    accounts: CodebuffAccountPool = request.app.state.accounts
+    accounts.handle_error(account_index, str(error), error.status_code, model)
 
 
 def _record_request(
@@ -277,6 +295,7 @@ async def chat_completions(request: Request) -> Any:
             )
     except CodebuffError as error:
         if lease is not None:
+            _handle_upstream_error(request, lease._account_index, error, model)
             await lease.aclose()
         logger.warning(
             "failed to prepare chat completion: %s",
@@ -320,6 +339,7 @@ async def chat_completions(request: Request) -> Any:
     except Exception as error:
         duration_ms = int((time.time() - started) * 1000)
         _record_request(request, api_key, model, duration_ms, "error", error=str(error))
+        _handle_upstream_error(request, lease._account_index, error, model)
         return _error_response(error)
     finally:
         await lease.aclose()
@@ -368,6 +388,8 @@ async def _stream_openai_chunks(
                     render_debug(data, settings.log_body_chars),
                 )
     except CodebuffError as error:
+        if account_lease is not None:
+            _handle_upstream_error(request, account_lease._account_index, error, payload.get("model", ""))
         logger.warning(
             "chat stream failed run_id=%s: %s",
             run.run_id,
@@ -678,6 +700,7 @@ async def anthropic_messages(request: Request) -> Any:
             )
     except CodebuffError as error:
         if lease is not None:
+            _handle_upstream_error(request, lease._account_index, error, model)
             await lease.aclose()
         logger.warning(
             "failed to prepare anthropic messages: %s",
@@ -727,6 +750,7 @@ async def anthropic_messages(request: Request) -> Any:
     except Exception as error:
         duration_ms = int((time.time() - started) * 1000)
         _record_request(request, api_key, model, duration_ms, "error", error=str(error))
+        _handle_upstream_error(request, lease._account_index, error, model)
         return JSONResponse(
             status_code=500,
             content=anthropic_error_payload(str(error)),
@@ -781,6 +805,8 @@ async def _stream_anthropic_events(
                     )
                 yield anthropic_sse_encode(event_type, event_data)
     except CodebuffError as error:
+        if account_lease is not None:
+            _handle_upstream_error(request, account_lease._account_index, error, requested_model or payload.get("model", ""))
         logger.warning(
             "anthropic stream failed run_id=%s: %s",
             run.run_id,

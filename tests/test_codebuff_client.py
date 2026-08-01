@@ -80,7 +80,7 @@ class FailingAdsClient(CodebuffClient):
 
 
 class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
-    def test_client_uses_explicit_proxy_only_when_enabled(self) -> None:
+    async def test_client_uses_explicit_proxy_only_when_enabled(self) -> None:
         captured = {}
 
         class FakeAsyncClient:
@@ -91,11 +91,14 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
             codebuff_token="token",
             local_api_key=None,
             proxy_enabled=True,
-            proxy_url="socks5://127.0.0.1:1080",
+            proxy_type="socks5",
+            proxy_host="127.0.0.1",
+            proxy_port=1080,
         )
 
+        client = CodebuffClient(settings)
         with patch("freebuff2api.codebuff.httpx.AsyncClient", FakeAsyncClient):
-            CodebuffClient(settings)
+            await client._ensure_client()
 
         self.assertEqual(captured["proxy"], "socks5://127.0.0.1:1080")
         self.assertFalse(captured["trust_env"])
@@ -188,7 +191,7 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
                 request_timeout=1,
             )
         )
-        await client._client.aclose()
+        # client is lazy; no default client to close before injecting the mock
         client._client = httpx.AsyncClient(
             transport=httpx.MockTransport(raise_connect_error),
             timeout=1,
@@ -223,7 +226,7 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
                 request_timeout=1,
             )
         )
-        await client._client.aclose()
+        # client is lazy; no default client to close before injecting the mock
         client._client = httpx.AsyncClient(
             transport=httpx.MockTransport(session_model_mismatch),
             timeout=1,
@@ -258,7 +261,7 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
                 request_timeout=1,
             )
         )
-        await client._client.aclose()
+        # client is lazy; no default client to close before injecting the mock
         client._client = httpx.AsyncClient(
             transport=httpx.MockTransport(session_model_mismatch),
             timeout=1,
@@ -289,7 +292,7 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
                 request_timeout=1,
             )
         )
-        await client._client.aclose()
+        # client is lazy; no default client to close before injecting the mock
         client._client = httpx.AsyncClient(
             transport=httpx.MockTransport(capture_headers),
             timeout=1,

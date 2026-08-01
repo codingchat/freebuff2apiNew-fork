@@ -10,9 +10,18 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .config import HAR_BROWSER_USER_AGENT, Settings
+from .config import HAR_BROWSER_USER_AGENT, Settings, project_env_path
 from .logging_config import redact_headers, render_debug
 from .models import agent_validation_payload
+from .token_rotation import (
+    STATUS_ACTIVE,
+    STATUS_BLOCKED,
+    STATUS_CHECKING,
+    STATUS_INVALID,
+    RotationState,
+    is_rate_limit_error,
+    parse_429_info,
+)
 
 
 logger = logging.getLogger("freebuff2api.codebuff")
@@ -74,17 +83,30 @@ class FreebuffSessionLease:
 class CodebuffClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.request_timeout, read=None),
-            follow_redirects=True,
-            proxy=settings.upstream_proxy_url,
-            trust_env=False,
-        )
+        # httpx client is created lazily on first use. With a proxy configured,
+        # constructing an AsyncClient is slow (~1.4s on Windows); deferring it
+        # keeps account-pool startup fast even with many accounts.
+        self._client: httpx.AsyncClient | None = None
+        self._client_lock = asyncio.Lock()
         self._agents_validated = False
         self._validate_lock = asyncio.Lock()
 
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            async with self._client_lock:
+                if self._client is None:
+                    self._client = httpx.AsyncClient(
+                        timeout=httpx.Timeout(self.settings.request_timeout, read=None),
+                        follow_redirects=True,
+                        proxy=self.settings.upstream_proxy_url,
+                        trust_env=False,
+                    )
+        return self._client
+
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     def _headers(
         self,
@@ -123,7 +145,7 @@ class CodebuffClient:
         url = f"{self.settings.codebuff_api_url}{path}"
         request_headers = headers or self._headers(json_body=body is not None)
         try:
-            response = await self._client.request(
+            response = await (await self._ensure_client()).request(
                 method,
                 url,
                 json=body,
@@ -351,7 +373,7 @@ class CodebuffClient:
             return
         url = f"{self.settings.zeroclick_api_url}/api/v2/impressions"
         try:
-            response = await self._client.post(
+            response = await (await self._ensure_client()).post(
                 url,
                 json={"ids": ids},
                 headers={
@@ -464,7 +486,7 @@ class CodebuffClient:
             user_agent=CHAT_COMPLETIONS_USER_AGENT,
         )
         try:
-            async with self._client.stream(
+            async with (await self._ensure_client()).stream(
                 "POST",
                 url,
                 json=payload,
@@ -683,6 +705,11 @@ class CodebuffAccount:
     client: CodebuffClient
     sessions: SessionManager
     busy: bool = False
+    active_requests: int = 0
+
+    @property
+    def is_busy(self) -> bool:
+        return self.active_requests > 0
 
 
 @dataclass
@@ -703,7 +730,7 @@ class CodebuffAccountLease:
 
 
 class CodebuffAccountPool:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, rotation: RotationState | None = None) -> None:
         tokens = settings.codebuff_tokens or (None,)
         self._accounts: list[CodebuffAccount] = []
         for token in tokens:
@@ -717,6 +744,10 @@ class CodebuffAccountPool:
             )
         self._next_index = 0
         self._condition = asyncio.Condition()
+        self._rotation = rotation or RotationState(len(self._accounts), project_env_path())
+        self._max_concurrency = max(1, getattr(settings, "max_concurrency_per_account", 1))
+        self._last_used: dict[int, float] = {}
+        self._probe_tasks: set[asyncio.Task] = set()
 
     @property
     def account_count(self) -> int:
@@ -731,6 +762,10 @@ class CodebuffAccountPool:
         return self._accounts[0].sessions
 
     async def aclose(self) -> None:
+        for task in list(self._probe_tasks):
+            task.cancel()
+        if self._probe_tasks:
+            await asyncio.gather(*self._probe_tasks, return_exceptions=True)
         await asyncio.gather(
             *(account.client.aclose() for account in self._accounts),
             return_exceptions=True,
@@ -741,61 +776,297 @@ class CodebuffAccountPool:
         model: str,
         messages: list[dict[str, Any]] | None = None,
     ) -> CodebuffAccountLease:
-        account_index = await self._reserve_account()
-        account = self._accounts[account_index]
-        logger.info(
-            "account reserved index=%s session_model=%s messages=%s",
-            account_index + 1,
-            model,
-            len(messages or []),
-        )
-        try:
-            session_lease = await account.sessions.acquire_session(model, messages)
-        except Exception:
-            logger.exception(
-                "account session acquire failed index=%s session_model=%s",
+        last_error: Exception | None = None
+        for _ in range(2):
+            account_index = await self._reserve_account(model)
+            account = self._accounts[account_index]
+            logger.info(
+                "account reserved index=%s session_model=%s messages=%s",
                 account_index + 1,
                 model,
+                len(messages or []),
             )
-            await self.release(account_index)
-            raise
-        logger.info(
-            "account session acquired index=%s session_model=%s instance_id=%s remaining_ms=%s",
-            account_index + 1,
-            session_lease.session.model,
-            session_lease.session.instance_id,
-            session_lease.session.remaining_ms,
-        )
-        return CodebuffAccountLease(
-            client=account.client,
-            session=session_lease.session,
-            _session_lease=session_lease,
-            _pool=self,
-            _account_index=account_index,
-        )
+            try:
+                session_lease = await account.sessions.acquire_session(model, messages)
+            except CodebuffError as error:
+                await self.release(account_index)
+                if error.status_code == 429 or is_rate_limit_error(str(error)):
+                    raise
+                last_error = error
+                self.handle_error(account_index, str(error), error.status_code, model)
+                logger.warning(
+                    "account session acquire transient failure index=%s session_model=%s: %s",
+                    account_index + 1,
+                    model,
+                    error,
+                )
+                continue
+            except Exception:
+                logger.exception(
+                    "account session acquire failed index=%s session_model=%s",
+                    account_index + 1,
+                    model,
+                )
+                await self.release(account_index)
+                raise
+            # Success: reset the transient-failure counter (optimization ②)
+            if self._rotation is not None:
+                self._rotation.mark_success(account_index)
+            self._last_used[account_index] = time.monotonic()
+            logger.info(
+                "account session acquired index=%s session_model=%s instance_id=%s remaining_ms=%s",
+                account_index + 1,
+                session_lease.session.model,
+                session_lease.session.instance_id,
+                session_lease.session.remaining_ms,
+            )
+            return CodebuffAccountLease(
+                client=account.client,
+                session=session_lease.session,
+                _session_lease=session_lease,
+                _pool=self,
+                _account_index=account_index,
+            )
+        raise last_error if last_error else CodebuffError("no account available")
 
     async def release(self, account_index: int) -> None:
         async with self._condition:
-            self._accounts[account_index].busy = False
+            account = self._accounts[account_index]
+            account.active_requests = max(0, account.active_requests - 1)
+            account.busy = account.active_requests > 0
             self._condition.notify(1)
 
-    async def _reserve_account(self) -> int:
+    async def _reserve_account(self, model: str = "") -> int:
         async with self._condition:
             while True:
-                account_index = self._next_available_index()
+                account_index = self._next_available_index(model)
                 if account_index is not None:
-                    self._accounts[account_index].busy = True
+                    account = self._accounts[account_index]
+                    account.active_requests += 1
+                    account.busy = True
                     self._next_index = (account_index + 1) % len(self._accounts)
                     return account_index
-                await self._condition.wait()
+                # No usable account right now. Trigger half-open probes for any
+                # account whose cooldown just expired, then wait until the earliest
+                # unblock (or a release).
+                self._maybe_trigger_half_open_probes()
+                wait_secs: float | None = None
+                if self._rotation:
+                    remaining = [
+                        self._rotation.block_remaining(i, model)
+                        for i in range(len(self._accounts))
+                        if self._rotation.is_blocked(i, model)
+                    ]
+                    if remaining:
+                        wait_secs = min(remaining)
+                if wait_secs is None or wait_secs <= 0:
+                    wait_secs = 5.0
+                try:
+                    await asyncio.wait_for(self._condition.wait(), timeout=wait_secs)
+                except asyncio.TimeoutError:
+                    pass
 
-    def _next_available_index(self) -> int | None:
+    def _next_available_index(self, model: str = "") -> int | None:
+        """Round-robin: scan from _next_index (true rotation), skipping busy/
+        over-concurrency / blocked(for model) / invalid accounts."""
         account_count = len(self._accounts)
+        if account_count == 0:
+            return None
+        start = self._next_index % account_count
         for offset in range(account_count):
-            account_index = (self._next_index + offset) % account_count
-            if not self._accounts[account_index].busy:
-                return account_index
+            account_index = (start + offset) % account_count
+            account = self._accounts[account_index]
+            if account.active_requests >= self._max_concurrency:
+                continue
+            if self._rotation and (
+                self._rotation.is_blocked(account_index, model)
+                or self._rotation.status_of(account_index) == STATUS_INVALID
+            ):
+                continue
+            return account_index
         return None
+
+    # ── Half-open probes (optimization ③) ───────
+
+    def _maybe_trigger_half_open_probes(self) -> None:
+        """Accounts whose cooldown expired but are still marked blocked get a
+        background probe; success → active (notifies waiters), failure → re-block."""
+        if self._rotation is None:
+            return
+        now = time.monotonic()
+        for index in range(len(self._accounts)):
+            if self._rotation.status_of(index) != STATUS_BLOCKED:
+                continue
+            if not self._rotation.is_blocked(index):
+                # cooldown expired → probe in the background
+                self._rotation.mark_checking(index)
+                task = asyncio.create_task(self._half_open_probe(index))
+                self._probe_tasks.add(task)
+                task.add_done_callback(self._probe_tasks.discard)
+                logger.info("half-open probe scheduled account=%s", index + 1)
+
+    async def _half_open_probe(self, index: int) -> None:
+        """Probe one account after cooldown expiry. True → active + notify;
+        False → re-block briefly; inconclusive → active (keep usable)."""
+        try:
+            result = await self._validate_account_token(index)
+            async with self._condition:
+                if result is False:
+                    # Still failing: short cooldown so it isn't retried immediately
+                    self._rotation.block(index, retry_after_ms=30_000)
+                    logger.warning(
+                        "half-open probe failed account=%s re-blocked 30s", index + 1
+                    )
+                else:
+                    self._rotation.mark_active(index)
+                    logger.info(
+                        "half-open probe ok account=%s", index + 1
+                    )
+                self._condition.notify_all()
+        except Exception:
+            logger.exception("half-open probe error account=%s", index + 1)
+            async with self._condition:
+                self._rotation.mark_active(index)
+                self._condition.notify_all()
+
+    # ── Health / rotation helpers ────────────────
+
+    @property
+    def rotation(self) -> RotationState:
+        return self._rotation
+
+    def account_statuses(self) -> list[dict[str, Any]]:
+        """Per-account status for the admin panel."""
+        rows: list[dict[str, Any]] = []
+        for index, account in enumerate(self._accounts):
+            rows.append(
+                {
+                    "index": index + 1,
+                    "token_prefix": (account.client.settings.codebuff_token or "")[:8],
+                    "status": (
+                        self._rotation.status_of(index) if self._rotation else STATUS_ACTIVE
+                    ),
+                    "blocked": self._rotation.is_blocked(index) if self._rotation else False,
+                    "block_remaining": (
+                        round(self._rotation.block_remaining(index), 1)
+                        if self._rotation
+                        else 0
+                    ),
+                    "failure_count": (
+                        self._rotation.failure_count_of(index) if self._rotation else 0
+                    ),
+                    "is_current": bool(
+                        self._rotation and index == self._rotation.current_index
+                    ),
+                    "last_429": (
+                        self._rotation.last_429_info
+                        if self._rotation
+                        and self._rotation.last_429_account == index
+                        else {}
+                    ),
+                }
+            )
+        return rows
+
+    def handle_error(self, index: int, message: str, status_code: int = 502, model: str = "") -> None:
+        """Record an upstream error against an account. 429 → cooldown (per model)
+        + rotate; transient (5xx/network) → failure counter; 409 etc. → untouched."""
+        if self._rotation is None:
+            return
+        if status_code == 429 or is_rate_limit_error(message):
+            self._rotation.rotate(
+                reason="429",
+                error_message=message,
+                is_429=True,
+                failed_index=index,
+                model=model,
+            )
+        elif status_code in (502, 500):
+            self._rotation.record_failure(index)
+
+    def manual_rotate(self) -> int:
+        if self._rotation is None:
+            return 0
+        index, _ = self._rotation.rotate(reason="manual")
+        if self._accounts:
+            self._next_index = index
+        return index
+
+    def set_active(self, index: int) -> None:
+        """index is 1-based (admin UI). Sets the preferred rotation pointer."""
+        if self._rotation is None:
+            return
+        if index < 1 or index > len(self._accounts):
+            raise IndexError(f"account index out of range: {index}")
+        self._rotation.set_active(index - 1)
+        self._next_index = index - 1
+
+    async def validate_accounts(self) -> None:
+        """Startup/background health check. Marks invalid accounts so selection skips them."""
+        if self._rotation is None:
+            return
+        if not any(account.client.settings.codebuff_token for account in self._accounts):
+            return
+        # Cap concurrency: creating an httpx client with a proxy is slow (~1.4s
+        # each on Windows), so validating many accounts at once would flood the
+        # event loop and delay the server from binding its socket.
+        semaphore = asyncio.Semaphore(5)
+
+        async def _run(index: int):
+            async with semaphore:
+                return await self._validate_account_token(index)
+
+        results = await asyncio.gather(
+            *(_run(index) for index in range(len(self._accounts))),
+            return_exceptions=True,
+        )
+        valid = 0
+        inconclusive = 0
+        for index, ok in enumerate(results):
+            if ok is True:
+                self._rotation.mark_active(index)
+                self._rotation.reset_failures(index)
+                valid += 1
+            elif ok is False:
+                self._rotation.mark_invalid(index)
+                logger.warning(
+                    "account validation marked invalid index=%s", index + 1
+                )
+            else:
+                # Could not verify (timeout/network) → keep the account usable
+                self._rotation.mark_active(index)
+                inconclusive += 1
+        logger.info(
+            "account validation done valid=%s inconclusive=%s total=%s",
+            valid,
+            inconclusive,
+            len(self._accounts),
+        )
+
+    async def _validate_account_token(self, index: int) -> bool | None:
+        self._rotation.mark_checking(index)
+        account = self._accounts[index]
+        try:
+            await account.client.get_session()
+        except CodebuffError as error:
+            message = str(error)
+            if error.status_code == 401 or "Invalid" in message or "invalid" in message:
+                logger.warning(
+                    "account validation failed index=%s: %s", index + 1, error
+                )
+                return False
+            logger.warning(
+                "account validation could not verify index=%s; keeping: %s",
+                index + 1,
+                error,
+            )
+            return None
+        except Exception:
+            logger.exception(
+                "account validation unexpected error index=%s", index + 1
+            )
+            return None
+        return True
 
 
 def utc_now_iso() -> str:
@@ -838,6 +1109,11 @@ def _upstream_error(
         else response.text
     )
     text = raw_text[:500]
+    if response.status_code == 429:
+        return CodebuffError(
+            f"{prefix}: {response.status_code} {text}",
+            429,
+        )
     if response.status_code == 409:
         try:
             data = (
