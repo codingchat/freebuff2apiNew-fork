@@ -1,6 +1,7 @@
 import { NavLink, Outlet, Navigate, useNavigate } from "react-router-dom"
 import { useAuth } from "@/hooks/use-auth"
 import { useDashboardTheme } from "@/components/theme/theme-context"
+import { PageLoading } from "@/components/shared/PageLoading"
 import {
   LayoutDashboard,
   KeyRound,
@@ -55,11 +56,7 @@ export default function AppLayout() {
   const ThemeIcon = themeIcons[mode] || Monitor
 
   if (isLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-background">
-        <p className="text-muted-foreground">加载中...</p>
-      </div>
-    )
+    return <PageLoading />
   }
 
   if (!isAuthenticated) {

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { api } from "@/lib/api-client"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -11,6 +11,11 @@ import {
   RefreshCw, Target, Activity, Ban,
 } from "lucide-react"
 import { usePolling } from "@/hooks/use-polling"
+import { Skeleton } from "@/components/ui/skeleton"
+import {
+  CardSkeleton,
+  TokenStatusSkeleton,
+} from "@/components/shared/PageSkeletons"
 import type { ConfigPayload, TokenRow, TokenVerifyResult, AccountStatus } from "@/types"
 
 interface MergedAccount extends TokenRow {
@@ -46,8 +51,8 @@ export default function TokenPage() {
   const [verifying, setVerifying] = useState<number | null>(null)
   const [verifyResult, setVerifyResult] = useState<{ idx: number; result: TokenVerifyResult } | null>(null)
   const [busy, setBusy] = useState(false)
-  const [now, setNow] = useState(Date.now())
-  const fetchedAtRef = useRef(Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  const [fetchedAt, setFetchedAt] = useState(() => Date.now())
 
   // 1s ticker for live cooldown countdown
   useEffect(() => {
@@ -57,7 +62,7 @@ export default function TokenPage() {
 
   // Reset the fetchedAt anchor whenever config data is refreshed
   const dataKey = JSON.stringify(data?.rotation?.accounts?.map((a) => a.block_remaining))
-  useEffect(() => { fetchedAtRef.current = Date.now() }, [dataKey])
+  useEffect(() => { setFetchedAt(Date.now()) }, [dataKey])
 
   const config: ConfigPayload | null = data
 
@@ -126,7 +131,32 @@ export default function TokenPage() {
   }, [refresh])
 
   if (loading && !config) {
-    return <div className="py-20 text-center text-muted-foreground">加载中...</div>
+    return (
+      <div className="mx-auto w-full max-w-[960px] space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-7 w-36" />
+            <Skeleton className="h-4 w-64" />
+          </div>
+          <div className="flex gap-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-24" />
+            ))}
+          </div>
+        </div>
+        <TokenStatusSkeleton />
+        {Array.from({ length: 3 }).map((_, i) => (
+          <CardSkeleton key={i} className="flex items-center gap-4 p-4">
+            <Skeleton className="h-10 w-10 rounded-lg" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-4 w-48" />
+              <Skeleton className="h-3 w-32" />
+            </div>
+            <Skeleton className="h-6 w-14" />
+          </CardSkeleton>
+        ))}
+      </div>
+    )
   }
 
   const tokens: TokenRow[] = config?.tokens || []
@@ -146,7 +176,7 @@ export default function TokenPage() {
   })
 
   const liveRemaining = (account: MergedAccount): number =>
-    Math.max(0, account.block_remaining - (now - fetchedAtRef.current) / 1000)
+    Math.max(0, account.block_remaining - (now - fetchedAt) / 1000)
 
   const has429 = Boolean(rotation?.last_429_time)
 

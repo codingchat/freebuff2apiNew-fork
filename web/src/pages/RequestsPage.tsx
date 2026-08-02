@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/select"
 import { RefreshCw, Trash2 } from "lucide-react"
 import { usePolling } from "@/hooks/use-polling"
+import { Skeleton } from "@/components/ui/skeleton"
+import { TableSkeleton } from "@/components/shared/PageSkeletons"
 import type { RequestsData, RequestRecord } from "@/types"
 
 export default function RequestsPage() {
@@ -33,6 +35,26 @@ export default function RequestsPage() {
 
   const reqData: RequestsData | null = data
   const items: RequestRecord[] = reqData?.items || []
+
+  if (loading && !reqData) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-7 w-36" />
+            <Skeleton className="h-4 w-24" />
+          </div>
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-9 w-40" />
+            <Skeleton className="h-9 w-28" />
+            <Skeleton className="h-9 w-20" />
+            <Skeleton className="h-9 w-20" />
+          </div>
+        </div>
+        <TableSkeleton rows={6} columns={7} />
+      </div>
+    )
+  }
 
   const handleClear = async () => {
     if (!confirm("确定清空所有请求记录？")) return

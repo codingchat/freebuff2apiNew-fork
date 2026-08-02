@@ -14,7 +14,9 @@ export function usePolling<T>(
   // arrow fetcher (e.g. `() => api.config()`) would otherwise change identity on
   // every render, restarting the polling effect and racing `refresh()` results.
   const fetcherRef = useRef(fetcher)
-  fetcherRef.current = fetcher
+  useEffect(() => {
+    fetcherRef.current = fetcher
+  }, [fetcher])
 
   const start = useCallback(async (id: number) => {
     try {
