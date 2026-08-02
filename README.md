@@ -1,6 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white" alt="Python">  <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React">
   <img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white" alt="Tailwind CSS">
@@ -34,6 +33,10 @@
 | 🆓 **完全免费** | 基于 Freebuff 免费模型，无需付费 |
 | 🎯 **多模型支持** | DeepSeek V4 Flash/Pro、Kimi K2.6、MiniMax M2.7/M3、Mimo V2.5/V2.5 Pro、Gemini |
 | 🔑 **多 API Key** | 支持创建多个 API Key，每个 Key 可配置独立的模型白名单 |
+| 🔄 **多账号轮询** | 多 Token 自动轮换，每次请求切换下一个可用账号；429 限流自动冷却并跳过，失败账号自动剔除 |
+| 🧠 **按模型限流隔离** | 429 冷却按 (账号, 模型) 隔离，一个模型限流不影响同账号其他模型 |
+| 📊 **模型可用矩阵** | 概览页实时展示每个模型在每个 Token 上的可用状态与冷却倒计时 |
+| 🛡️ **健康自愈** | 启动批量验证 Token、冷却到期自动半开探测恢复、成功调用重置失败计数 |
 | 📊 **管理面板** | 现代化 React 管理后台，支持实时日志、Token 管理、网络检测等 |
 | 🌊 **流式输出** | 完整支持 SSE 流式响应（Streaming） |
 | 🚀 **一键部署** | 支持 Vercel Serverless 和本地/服务器部署 |
@@ -43,6 +46,22 @@
 ---
 
 ## 📝 更新日志
+
+### v0.2.0（2026-08-01）— 🔄 多账号轮询与健康管理
+
+**新增**：
+
+- **多账号轮询**：`FREEBUFF_TOKEN` 支持逗号分隔多 Token，每次请求后指针前进轮换账号（真正的 round-robin），串行请求也会依次使用不同 Token；跳过 429 冷却/失效/超并发账号
+- **429 按模型冷却**：限流按 `(账号, 模型)` 隔离，仅限流模型受影响，同账号其他模型继续可用；429 响应携带 `Retry-After` 头
+- **账号健康管理**：启动并发验证所有 Token（失效自动剔除）、连续瞬时故障 3 次标记失效、成功调用重置失败计数、冷却到期自动半开探测恢复
+- **概览页模型可用矩阵**：每个模型 × 每个 Token 的实时可用状态（可用/限流冷却/失效/验证中），悬停显示冷却倒计时
+- **每账号并发上限**：`FREEBUFF_ACCOUNT_CONCURRENCY` 控制单账号并发请求数（默认 1），超限账号自动跳过
+- **轮询指针持久化**：当前账号写入 `.env` 的 `CURRENT_TOKENNum`，重启后续轮
+- **管理面板增强**：Token 页展示状态徽章/冷却倒计时/最近 429 详情，支持手动轮换、激活指定账号、重新校验全部账号
+
+**改动文件**：`token_rotation.py`（新增）、`codebuff.py`、`app.py`、`admin.py`、`config.py`、前端 `DashboardPage`/`TokenPage`、`tests/test_token_rotation.py`
+
+**验证**：`tests/test_token_rotation.py` 22 个用例通过；全量回归 139 passed（仅 3 个 pre-existing 的 proxy_url 旧测试失败）；端到端实测 round-robin、按模型冷却、半开探测、并发上限全部正常。
 
 ### v0.1.1（2026-08-01）— 🐛 修复上游 403 `free_mode_cli_required`
 
@@ -58,12 +77,14 @@
 
 **验证**：端到端实测 session → agent-runs → chat/completions 返回 200 + SSE 流式响应，测试套件零回归。
 
+> **⚠️ 测试现状（2026-08-01）**：当前 `pytest tests/` 因 `tests/test_new_features.py`（旧脚本，模块级断言）收集失败（1 error、0 collected），排除后其余 120 个用例中 5 个失败、115 个通过。详见 [progress.md](progress.md)「2026-08-01 全面代码审查」章节。
+
 
 ## 🚀 快速开始
 
 ### 环境要求
 
-- Python 3.11+（推荐 3.12）
+- Python 3.11–3.13（`.python-version` 锁定 3.13，3.14 已实测通过）
 - Node.js 18+（仅构建前端需要）
 
 ### 1. 克隆仓库
@@ -97,7 +118,8 @@ cp .env.example .env
 ```env
 # 🔑 Freebuff Token（必填）
 # 从 https://www.codebuff.com 获取
-FREEBUFF_TOKEN=your_token_here
+# 多账号：逗号分隔多个 Token，自动轮询切换
+FREEBUFF_TOKEN=token1,token2,token3
 
 # 🔐 API Key（必填）
 # 用于调用 /v1/* 接口的访问密钥
@@ -106,7 +128,13 @@ FREEBUFF_API_KEY=sk-your-api-key
 # 🛡️ 管理员密钥（必填）
 # 用于登录管理面板
 FREEBUFF_ADMIN_KEY=sk-admin
+
+# ⚙️ 每账号并发请求上限（可选，默认 1）
+# 1 = 每 Token 同时处理 1 个请求；调大可提高单账号吞吐
+FREEBUFF_ACCOUNT_CONCURRENCY=1
 ```
+
+> 💡 当前轮询账号由系统自动写入 `.env` 的 `CURRENT_TOKENNum`（无需手动配置），重启后从该账号继续轮换。
 
 ### 4. 启动服务
 
@@ -190,18 +218,9 @@ sudo systemctl enable freebuff2api
 sudo systemctl start freebuff2api
 ```
 
-### 方式三：Docker 部署
+### 方式三：Docker 部署（暂不可用）
 
-```bash
-docker build -t freebuff2api .
-docker run -d \
-  -p 8000:8000 \
-  -e FREEBUFF_TOKEN=your_token \
-  -e FREEBUFF_API_KEY=sk-your-key \
-  -e FREEBUFF_ADMIN_KEY=sk-admin \
-  --name freebuff2api \
-  freebuff2api
-```
+> ⚠️ 仓库暂未提供 `Dockerfile`，暂不支持 `docker build`。需要容器化部署时，请先用方式二跑通本地/服务器部署，或自行编写 Dockerfile（推荐 `python:3.13-slim` + `uvicorn freebuff2api.app:app`）。
 
 ---
 
@@ -274,8 +293,8 @@ Content-Type: application/json
 
 | 模块 | 说明 |
 |:---:|:---|
-| 📊 **概览** | 服务状态、Token 数量、模型数量、部署环境 |
-| 🔑 **Token 管理** | 添加/编辑/删除 Freebuff Token，支持验证有效性 |
+| 📊 **概览** | 服务状态、Token 数量、模型数量、部署环境；**模型可用矩阵**（每个模型在每个 Token 上的可用状态与冷却倒计时） |
+| 🔑 **Token 管理** | 添加/编辑/删除 Freebuff Token，验证有效性，**手动轮换/激活指定账号/批量校验**，状态徽章与冷却倒计时 |
 | 🗝️ **API Key** | 创建多个 API Key，配置模型白名单 |
 | 📝 **运行日志** | 实时查看服务日志，按等级筛选 |
 | 📈 **请求记录** | 查看 API 调用历史，按模型/状态筛选 |
@@ -320,17 +339,34 @@ Content-Type: application/json
 
 | 变量名 | 必填 | 默认值 | 说明 |
 |:---|:---:|:---:|:---|
-| `FREEBUFF_TOKEN` | ✅ | - | Freebuff Token（多个用逗号分隔） |
-| `FREEBUFF_API_KEY` | ✅ | - | API 访问密钥 |
+| `FREEBUFF_TOKEN` | ✅ | - | Freebuff Token（多个用逗号分隔；兼容 `CODEBUFF_TOKEN`） |
+| `FREEBUFF_API_KEY` | ✅ | - | API 访问密钥（兼容 `OPENAI_API_KEY`） |
 | `FREEBUFF_ADMIN_KEY` | ✅ | `sk-admin` | 管理面板密钥（⚠️ 必须修改） |
-| `FREEBUFF_API_BASE_URL` | ❌ | `https://www.codebuff.com` | 上游 API 地址 |
+| `FREEBUFF_API_BASE_URL` | ❌ | `https://www.codebuff.com` | 上游 API 地址（兼容 `CODEBUFF_BASE_URL`） |
+| `ZEROCLICK_BASE_URL` | ❌ | `https://zeroclick.dev` | 广告提供商 Zeroclick 上游地址 |
 | `FREEBUFF_TIMEOUT` | ❌ | `60` | 请求超时（秒） |
 | `FREEBUFF_PROXY_ENABLED` | ❌ | `false` | 是否启用代理 |
-| `FREEBUFF_PROXY_URL` | ❌ | - | 代理地址（支持 socks5） |
-| `FREEBUFF_DEBUG` | ❌ | `false` | 调试模式 |
+| `FREEBUFF_PROXY_TYPE` | ❌ | `socks5` | 代理协议（http/https/socks5/socks5h） |
+| `FREEBUFF_PROXY_HOST` | ❌ | - | 代理主机 |
+| `FREEBUFF_PROXY_PORT` | ❌ | `1080` | 代理端口 |
+| `FREEBUFF_PROXY_USERNAME` | ❌ | - | 代理用户名（可选） |
+| `FREEBUFF_PROXY_PASSWORD` | ❌ | - | 代理密码（可选） |
+| `FREEBUFF_DEBUG` | ❌ | `false` | 调试模式（等价 `FREEBUFF_LOG_LEVEL=DEBUG`） |
 | `FREEBUFF_LOG_LEVEL` | ❌ | `INFO` | 日志等级 |
+| `FREEBUFF_LOG_BODY_CHARS` | ❌ | `2000` | 调试日志中请求/响应体截断字符数（debug 模式默认 0） |
+| `FREEBUFF_LOG_COLOR` | ❌ | `true` | 彩色日志（设置 `NO_COLOR` 时默认关闭） |
+| `FREEBUFF_ADMIN_LOG_LINES` | ❌ | `1000` | 管理面板内存日志保留条数 |
 | `FREEBUFF_HOST` | ❌ | `0.0.0.0` | 监听地址 |
 | `FREEBUFF_PORT` | ❌ | `8000` | 监听端口 |
+| `FREEBUFF_API_KEYS` | ❌ | - | 多 API Key JSON 配置（替代单一 `FREEBUFF_API_KEY`） |
+| `FREEBUFF_MAX_REQUEST_RECORDS` | ❌ | `5000` | 请求记录内存保留上限 |
+| `FREEBUFF_SESSION_ID` | ❌ | 随机 | 上游会话 ID（通常自动生成，无需设置） |
+| `FREEBUFF_SYSTEM_PROMPT_OVERRIDE` | ❌ | - | 覆盖注入的 Buffy 系统提示词（追加在真实 Buffy 提示词之后） |
+| `FREEBUFF_AD_PROVIDERS` | ❌ | `gravity,zeroclick` | 广告提供商顺序（逗号分隔） |
+| `FREEBUFF_CLIENT_ID` | ❌ | 随机 | 模拟客户端设备 ID |
+| `FREEBUFF_TIMEZONE` | ❌ | `Asia/Shanghai` | 模拟客户端时区 |
+| `FREEBUFF_LOCALE` | ❌ | `zh-CN` | 模拟客户端语言 |
+| `FREEBUFF_OS` | ❌ | `windows` | 模拟客户端操作系统 |
 
 ---
 
@@ -464,4 +500,5 @@ A: Vercel 免费版有以下限制：
 <p align="center">
   <img src="https://img.shields.io/github/stars/t479842598/freebuff2apiNew?style=social" alt="Stars">
   <img src="https://img.shields.io/github/forks/t479842598/freebuff2apiNew?style=social" alt="Forks">
+</p>
 </p>

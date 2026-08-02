@@ -4,6 +4,8 @@ import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Server, Info } from "lucide-react"
 import { usePolling } from "@/hooks/use-polling"
+import { Skeleton } from "@/components/ui/skeleton"
+import { DetailSkeleton } from "@/components/shared/PageSkeletons"
 import type { EnvData } from "@/types"
 
 export default function EnvPage() {
@@ -12,7 +14,15 @@ export default function EnvPage() {
   const env: EnvData | null = data
 
   if (loading && !env) {
-    return <div className="py-20 text-center text-muted-foreground">加载中...</div>
+    return (
+      <div className="space-y-6">
+        <div className="space-y-2">
+          <Skeleton className="h-7 w-40" />
+          <Skeleton className="h-4 w-56" />
+        </div>
+        <DetailSkeleton />
+      </div>
+    )
   }
 
   if (!env) return null

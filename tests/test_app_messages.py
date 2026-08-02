@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 from freebuff2api.app import app
+from freebuff2api.codebuff import CodebuffAccountPool
+
+# lifespan 会后台启动 validate_accounts 并真实请求上游验证 token；
+# 单元测试里 patch 成 no-op，避免网络依赖导致测试挂起。
+CodebuffAccountPool.validate_accounts = AsyncMock(return_value=None)
 
 
 class AnthropicMessagesEndpointTests(unittest.TestCase):

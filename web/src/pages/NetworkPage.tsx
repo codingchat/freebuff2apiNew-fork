@@ -2,6 +2,7 @@ import { api } from "@/lib/api-client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { LoadingSpinner } from "@/components/shared/LoadingSpinner"
 import { Globe, RefreshCw, Wifi, WifiOff } from "lucide-react"
 import { usePolling } from "@/hooks/use-polling"
 import type { NetworkData, ConnectivityItem, RegionInfo } from "@/types"
@@ -115,7 +116,7 @@ export default function NetworkPage() {
         </div>
         <Card>
           <CardContent className="flex flex-col items-center gap-4 py-12">
-            <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground/50" />
+            <LoadingSpinner size={32} className="text-muted-foreground/50" />
             <p className="text-sm text-muted-foreground">正在检测公网 IP 和连通性，请稍候（约需 5-15 秒）</p>
             <Button size="sm" variant="outline" onClick={refresh}>
               <RefreshCw className="mr-1.5 h-4 w-4" />

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { LogoMark } from "@/components/shared/LogoMark"
+import { LoadingSpinner } from "@/components/shared/LoadingSpinner"
 
 export default function LoginPage() {
   const [password, setPassword] = useState("")
@@ -71,6 +72,7 @@ export default function LoginPage() {
               )}
 
               <Button type="submit" className="w-full" disabled={loading}>
+                {loading && <LoadingSpinner size={14} className="mr-2" />}
                 {loading ? "登录中..." : "登录"}
               </Button>
             </form>

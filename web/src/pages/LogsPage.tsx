@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/select"
 import { RefreshCw, Copy } from "lucide-react"
 import { usePolling } from "@/hooks/use-polling"
+import { Skeleton } from "@/components/ui/skeleton"
+import { TableSkeleton } from "@/components/shared/PageSkeletons"
 import type { LogsData, LogItem } from "@/types"
 
 const LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -35,6 +37,25 @@ export default function LogsPage() {
 
   const logsData: LogsData | null = data
   const items: LogItem[] = logsData?.items || []
+
+  if (loading && !logsData) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-7 w-36" />
+            <Skeleton className="h-4 w-32" />
+          </div>
+          <div className="flex items-center gap-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-20" />
+            ))}
+          </div>
+        </div>
+        <TableSkeleton rows={8} columns={4} />
+      </div>
+    )
+  }
 
   const copyAll = () => {
     const text = items

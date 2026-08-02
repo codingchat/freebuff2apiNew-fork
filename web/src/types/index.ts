@@ -31,6 +31,8 @@ export interface ConfigPayload {
   proxy_display: string
   base_url: string
   port: number
+  accounts: AccountStatus[]
+  rotation: RotationInfo | null
 }
 
 export interface TokenRow {
@@ -38,6 +40,40 @@ export interface TokenRow {
   masked: string
   prefix: string
   length: number
+}
+
+export interface AccountStatus {
+  index: number
+  token_prefix: string
+  status: "active" | "blocked" | "invalid" | "checking"
+  blocked: boolean
+  block_remaining: number
+  failure_count: number
+  is_current: boolean
+  last_429: Record<string, unknown>
+}
+
+export interface RotationInfo {
+  current_index: number
+  total_rotations: number
+  last_429_time: string
+  last_429_account: number | null
+  last_429_info: Record<string, unknown>
+  all_blocked: boolean
+  available_count: number
+  accounts: AccountStatus[]
+}
+
+export interface ModelAvailabilityAccount {
+  index: number
+  status: "active" | "blocked" | "invalid" | "checking"
+  block_remaining: number
+  is_current: boolean
+}
+
+export interface ModelAvailabilityRow {
+  model: string
+  accounts: ModelAvailabilityAccount[]
 }
 
 export interface OverviewData {
@@ -48,6 +84,7 @@ export interface OverviewData {
   base_url: string
   debug: boolean
   log_level: string
+  model_availability: ModelAvailabilityRow[]
 }
 
 export interface EnvData {

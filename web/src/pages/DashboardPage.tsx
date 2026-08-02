@@ -137,6 +137,91 @@ function ByModelCard({ stats, loading }: { stats?: RequestStats; loading: boolea
   )
 }
 
+function ModelAvailabilityCard({ overview, loading }: { overview?: OverviewData | null; loading: boolean }) {
+  const rows = overview?.model_availability ?? []
+  const accountCount = overview?.account_count ?? 0
+
+  const cellStyle = (status: string, remaining: number) => {
+    if (status === "blocked") {
+      const secs = Math.max(0, Math.round(remaining))
+      const m = Math.floor(secs / 60)
+      const s = secs % 60
+      return {
+        cls: "bg-destructive/15 text-destructive",
+        title: `限流中 · 冷却 ${m > 0 ? `${m}分${s}秒` : `${s}秒`}`,
+      }
+    }
+    if (status === "invalid") return { cls: "bg-muted text-muted-foreground", title: "失效" }
+    if (status === "checking") return { cls: "bg-primary/10 text-primary", title: "验证中" }
+    return { cls: "bg-success-muted/30 text-success", title: "可用" }
+  }
+
+  return (
+    <Card className="border-border/60 shadow-sm">
+      <CardHeader className="pb-1">
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <Server className="size-4 text-primary" />模型可用情况
+          {!loading && rows.length > 0 && (
+            <Badge variant="outline" className="ml-1 text-[10px]">
+              {rows.length} 模型 × {accountCount} 账号
+            </Badge>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <Skeleton className="h-24 w-full" />
+        ) : rows.length === 0 ? (
+          <p className="py-6 text-center text-xs text-muted-foreground">暂无账号数据</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[420px] border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-border/60">
+                  <th className="py-1.5 pr-3 text-left font-medium text-muted-foreground">模型</th>
+                  {Array.from({ length: accountCount }, (_, i) => (
+                    <th key={i} className="px-1.5 py-1.5 text-center font-medium text-muted-foreground">
+                      #{i + 1}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.model} className="border-b border-border/40 last:border-0">
+                    <td className="py-1.5 pr-3">
+                      <code className="font-mono text-[11px] text-muted-foreground">{row.model}</code>
+                    </td>
+                    {row.accounts.map((acc) => {
+                      const { cls, title } = cellStyle(acc.status, acc.block_remaining)
+                      return (
+                        <td key={acc.index} className="px-1 py-1.5 text-center">
+                          <div
+                            className={`mx-auto h-5 w-5 rounded-md ${cls} ${acc.is_current ? "ring-1 ring-primary/50" : ""}`}
+                            title={`${title}${acc.is_current ? " · 当前账号" : ""}`}
+                          />
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {!loading && rows.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-[10px] text-muted-foreground">
+            <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-success-muted/30 ring-1 ring-success/40" />可用</span>
+            <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-destructive/15 ring-1 ring-destructive/40" />限流冷却</span>
+            <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-muted ring-1 ring-border" />失效</span>
+            <span className="flex items-center gap-1"><span className="inline-block h-2.5 w-2.5 rounded bg-primary/10 ring-1 ring-primary/40" />验证中</span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function QuickActionsCard() {
   const navigate = useNavigate()
   const actions = [
@@ -191,6 +276,7 @@ export default function DashboardPage() {
         <div className="space-y-5">
           <RecentActivityCard stats={stats ?? undefined} loading={statsLoading} />
           <ByModelCard stats={stats ?? undefined} loading={statsLoading} />
+          <ModelAvailabilityCard overview={overview ?? undefined} loading={loading} />
         </div>
         <div className="space-y-5">
           <QuickActionsCard />
