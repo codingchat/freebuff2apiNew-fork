@@ -182,7 +182,7 @@ export default function TokenPage() {
 
   return (
     <div className="mx-auto w-full max-w-[960px] space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Token 管理</h1>
           <p className="text-sm text-muted-foreground">
@@ -190,7 +190,7 @@ export default function TokenPage() {
             {rotation ? ` · 可用 ${rotation.available_count} 个 · 累计轮换 ${rotation.total_rotations} 次` : ""}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={() => window.open("https://freebuff.071129.xyz/", "_blank", "noopener")}>
             <ExternalLink className="mr-1.5 h-4 w-4" />获取 Token
           </Button>
@@ -240,10 +240,12 @@ export default function TokenPage() {
                 <a href="https://freebuff.071129.xyz/" target="_blank" rel="noopener" className="underline ml-1">https://freebuff.071129.xyz/</a>
               </AlertDescription>
             </Alert>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <Input placeholder="粘贴 Freebuff Token" value={newToken} onChange={(e) => setNewToken(e.target.value)} autoFocus className="flex-1 font-mono text-sm" />
-              <Button size="sm" onClick={handleAdd} disabled={busy}><Check className="mr-1 h-4 w-4" />保存</Button>
-              <Button size="sm" variant="ghost" onClick={() => { setAdding(false); setNewToken("") }}><X className="mr-1 h-4 w-4" />取消</Button>
+              <div className="flex shrink-0 gap-2">
+                <Button size="sm" onClick={handleAdd} disabled={busy}><Check className="mr-1 h-4 w-4" />保存</Button>
+                <Button size="sm" variant="ghost" onClick={() => { setAdding(false); setNewToken("") }}><X className="mr-1 h-4 w-4" />取消</Button>
+              </div>
             </div>
           </CardContent>
         </Card>

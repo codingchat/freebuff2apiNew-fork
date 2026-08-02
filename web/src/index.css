@@ -405,6 +405,50 @@ html[data-theme="tungsten-dark"],
   animation: admin-shell-enter 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+@keyframes mobile-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes mobile-drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.mobile-overlay-enter {
+  animation: mobile-overlay-in 180ms ease-out;
+}
+
+.mobile-drawer-enter {
+  animation: mobile-drawer-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 移动端基础优化：禁止 iOS 自动字号缩放，表格保持紧凑可读 */
+@media (max-width: 640px) {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  .admin-shell table {
+    font-size: 0.75rem;
+  }
+
+  .admin-shell th,
+  .admin-shell td {
+    padding-left: 0.625rem;
+    padding-right: 0.625rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .login-page-shell,
   .login-brand,
@@ -417,7 +461,9 @@ html[data-theme="tungsten-dark"],
   .login-bridge-progress span,
   .login-error,
   .admin-shell-enter,
-  .admin-route-content {
+  .admin-route-content,
+  .mobile-overlay-enter,
+  .mobile-drawer-enter {
     animation: none;
     transition-duration: 0.01ms;
   }
