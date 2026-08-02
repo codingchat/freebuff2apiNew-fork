@@ -2,6 +2,7 @@ import { NavLink, Outlet, Navigate, useNavigate } from "react-router-dom"
 import { useAuth } from "@/hooks/use-auth"
 import { useDashboardTheme } from "@/components/theme/theme-context"
 import { PageLoading } from "@/components/shared/PageLoading"
+import { LogoMark } from "@/components/shared/LogoMark"
 import {
   LayoutDashboard,
   KeyRound,
@@ -68,9 +69,7 @@ export default function AppLayout() {
       {/* Sidebar */}
       <aside className="hidden w-56 shrink-0 flex-col border-r border-border bg-sidebar lg:flex">
         <div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-logo-background">
-            <div className="h-3 w-3 rounded-full bg-logo-start" />
-          </div>
+          <LogoMark className="h-8 w-8" />
           <span className="text-sm font-semibold text-sidebar-foreground">
             Freebuff2API
           </span>
@@ -122,9 +121,7 @@ export default function AppLayout() {
       <div className="flex flex-1 flex-col overflow-hidden">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 lg:hidden">
           <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-logo-background">
-              <div className="h-2.5 w-2.5 rounded-full bg-logo-start" />
-            </div>
+            <LogoMark className="h-7 w-7" />
             <span className="text-sm font-semibold">Freebuff2API</span>
           </div>
           <div className="flex items-center gap-1">
