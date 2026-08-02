@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { NavLink, Outlet, Navigate, useNavigate } from "react-router-dom"
 import { useAuth } from "@/hooks/use-auth"
 import { useDashboardTheme } from "@/components/theme/theme-context"
@@ -17,6 +18,8 @@ import {
   Sun,
   Moon,
   Monitor,
+  Menu,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -39,6 +42,7 @@ const themeIcons = {
 }
 
 export default function AppLayout() {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const { isAuthenticated, isLoading, logout } = useAuth()
   const navigate = useNavigate()
   const { mode, setMode, options } = useDashboardTheme()
@@ -119,12 +123,19 @@ export default function AppLayout() {
 
       {/* Mobile header */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 lg:hidden">
-          <div className="flex items-center gap-2">
-            <LogoMark className="h-7 w-7" />
-            <span className="text-sm font-semibold">Freebuff2API</span>
+        <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-3 sm:px-4 lg:hidden">
+          <div className="flex min-w-0 items-center gap-2">
+            <button
+              onClick={() => setMobileNavOpen(true)}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent"
+              aria-label="打开菜单"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <LogoMark className="h-7 w-7 shrink-0" />
+            <span className="truncate text-sm font-semibold">Freebuff2API</span>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <button
               onClick={cycleTheme}
               className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent"
@@ -145,6 +156,67 @@ export default function AppLayout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Mobile drawer navigation */}
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div
+            className="mobile-overlay-enter absolute inset-0 bg-black/45 backdrop-blur-[2px]"
+            onClick={() => setMobileNavOpen(false)}
+          />
+          <aside className="mobile-drawer-enter absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col border-r border-border bg-sidebar shadow-2xl">
+            <div className="flex h-14 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
+              <LogoMark className="h-8 w-8" />
+              <span className="text-sm font-semibold text-sidebar-foreground">
+                Freebuff2API
+              </span>
+              <button
+                onClick={() => setMobileNavOpen(false)}
+                className="ml-auto flex h-8 w-8 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                aria-label="关闭菜单"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <nav className="flex-1 overflow-y-auto px-3 py-3">
+              <div className="flex flex-col gap-0.5">
+                {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    onClick={() => setMobileNavOpen(false)}
+                    className={({ isActive }) =>
+                      cn(
+                        "flex items-center gap-2.5 rounded-md px-3 py-2.5 text-sm transition-colors",
+                        isActive
+                          ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                          : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+                      )
+                    }
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    {label}
+                  </NavLink>
+                ))}
+              </div>
+            </nav>
+
+            <div className="border-t border-sidebar-border p-3">
+              <button
+                onClick={() => {
+                  setMobileNavOpen(false)
+                  handleLogout()
+                }}
+                className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm text-sidebar-foreground/60 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+              >
+                <LogOut className="h-4 w-4" />
+                退出登录
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   )
 }

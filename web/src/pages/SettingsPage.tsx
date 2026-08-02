@@ -153,15 +153,15 @@ export default function SettingsPage() {
             </AlertDescription>
           </Alert>
 
-          <div className="flex gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <Input
               type="password"
               placeholder="新的管理员密钥（至少8位）"
               value={adminKey}
               onChange={(e) => setAdminKey(e.target.value)}
-              className="max-w-md"
+              className="max-w-md w-full"
             />
-            <Button onClick={handleUpdate} disabled={busy}>
+            <Button onClick={handleUpdate} disabled={busy} className="sm:w-auto">
               {busy ? "保存中..." : "保存"}
             </Button>
           </div>
@@ -203,9 +203,9 @@ export default function SettingsPage() {
             )}
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <Select value={proxyType} onValueChange={(v) => setProxyType(v ?? "socks5")}>
-              <SelectTrigger className="w-28">
+              <SelectTrigger className="w-full sm:w-28">
                 <SelectValue placeholder="类型" />
               </SelectTrigger>
               <SelectContent>
@@ -225,7 +225,7 @@ export default function SettingsPage() {
               placeholder="端口"
               value={proxyPort}
               onChange={(e) => setProxyPort(e.target.value)}
-              className="w-24 font-mono text-sm"
+              className="w-full font-mono text-sm sm:w-24"
             />
           </div>
 
@@ -238,7 +238,7 @@ export default function SettingsPage() {
               + 添加认证（可选）
             </button>
           ) : (
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <Input
                 placeholder="用户名（可选）"
                 value={proxyUsername}
@@ -252,7 +252,7 @@ export default function SettingsPage() {
                 onChange={(e) => setProxyPassword(e.target.value)}
                 className="flex-1 font-mono text-sm"
               />
-              <Button size="sm" variant="ghost" onClick={() => { setAuthOpen(false); setProxyUsername(""); setProxyPassword("") }}>
+              <Button size="sm" variant="ghost" className="shrink-0" onClick={() => { setAuthOpen(false); setProxyUsername(""); setProxyPassword("") }}>
                 移除
               </Button>
             </div>

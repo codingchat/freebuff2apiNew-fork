@@ -58,9 +58,9 @@ export default function ModelTestPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="flex gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row">
             <Select value={selectedModel} onValueChange={(v) => setSelectedModel(v ?? "")}>
-              <SelectTrigger className="w-64">
+              <SelectTrigger className="w-full sm:w-64">
                 <SelectValue placeholder="选择模型" />
               </SelectTrigger>
               <SelectContent>
@@ -74,6 +74,7 @@ export default function ModelTestPage() {
             <Button
               onClick={handleTest}
               disabled={loading || !selectedModel || !prompt.trim()}
+              className="sm:w-auto"
             >
               {loading ? (
                 <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />

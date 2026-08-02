@@ -175,7 +175,7 @@ function ModelAvailabilityCard({ overview, loading }: { overview?: OverviewData 
           <p className="py-6 text-center text-xs text-muted-foreground">暂无账号数据</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[420px] border-collapse text-xs">
+            <table className="w-full min-w-[420px] border-collapse text-[11px] sm:text-xs">
               <thead>
                 <tr className="border-b border-border/60">
                   <th className="py-1.5 pr-3 text-left font-medium text-muted-foreground">模型</th>

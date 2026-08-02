@@ -71,17 +71,17 @@ export default function RequestsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">请求记录</h1>
           <p className="text-sm text-muted-foreground">共 {items.length} 条</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Input
             placeholder="API Key 名称"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            className="w-40"
+            className="w-full sm:w-40"
           />
           <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v ?? "")}>
             <SelectTrigger className="w-28">
@@ -148,7 +148,7 @@ export default function RequestsPage() {
                       <td className="whitespace-nowrap px-4 py-2 text-xs">
                         {r.total_tokens}
                       </td>
-                      <td className="max-w-xs truncate px-4 py-2 text-xs text-destructive">
+                      <td className="max-w-xs break-words whitespace-normal px-4 py-2 text-xs text-destructive">
                         {r.error || "-"}
                       </td>
                     </tr>

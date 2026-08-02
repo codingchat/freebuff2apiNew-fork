@@ -84,7 +84,7 @@ export default function KeysPage() {
       {adding && (
         <Card>
           <CardContent className="flex flex-col gap-3 p-4">
-            <div className="flex gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row">
               <Input
                 placeholder="名称（如 production、dev）"
                 value={newName}
@@ -135,7 +135,7 @@ export default function KeysPage() {
                 </Badge>
               </div>
               <div className="mt-1 flex items-center gap-2">
-                <code className="font-mono text-sm text-muted-foreground">
+                <code className="block break-all font-mono text-sm text-muted-foreground">
                   {k.key}
                 </code>
                 <CopyButton text={k.key} />
