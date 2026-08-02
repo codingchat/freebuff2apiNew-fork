@@ -13,6 +13,7 @@
 
 ### 修复
 
+- 修复上游广告接口 400 报错：上游 `/api/v1/ads` 已移除 `zeroclick` provider（仅接受 `gravity|carbon`），默认广告提供商由 `gravity,zeroclick` 改为 `gravity,carbon`，并同步更新 `.env.example` / README / 测试。
 - 修复 `usePolling` 刷新竞态：刷新时旧请求结果不再覆盖新数据。
 - 修复上游 403 `free_mode_cli_required`：改用真实 Buffy 系统提示词注入。
 - 修复鉴权守卫、网络检测页、Token 页交互问题。

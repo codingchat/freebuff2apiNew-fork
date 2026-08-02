@@ -362,7 +362,7 @@ Content-Type: application/json
 | `FREEBUFF_MAX_REQUEST_RECORDS` | ❌ | `5000` | 请求记录内存保留上限 |
 | `FREEBUFF_SESSION_ID` | ❌ | 随机 | 上游会话 ID（通常自动生成，无需设置） |
 | `FREEBUFF_SYSTEM_PROMPT_OVERRIDE` | ❌ | - | 覆盖注入的 Buffy 系统提示词（追加在真实 Buffy 提示词之后） |
-| `FREEBUFF_AD_PROVIDERS` | ❌ | `gravity,zeroclick` | 广告提供商顺序（逗号分隔） |
+| `FREEBUFF_AD_PROVIDERS` | ❌ | `gravity,carbon` | 广告提供商顺序（逗号分隔；上游现已不接受 `zeroclick`） |
 | `FREEBUFF_CLIENT_ID` | ❌ | 随机 | 模拟客户端设备 ID |
 | `FREEBUFF_TIMEZONE` | ❌ | `Asia/Shanghai` | 模拟客户端时区 |
 | `FREEBUFF_LOCALE` | ❌ | `zh-CN` | 模拟客户端语言 |
