@@ -1,0 +1,45 @@
+name: build-armv7-binary
+
+on:
+  workflow_dispatch:        # 手动触发
+  push:
+    tags:                   # 打 v* tag 时自动构建
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (arm emulation)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm/v7
+
+      - name: Build armv7 binary (QEMU)
+        # 在 x86 runner 上用 QEMU 模拟 armhf 跑 Docker 构建；产物落在本地 daemon
+        run: |
+          docker build --platform linux/arm/v7 \
+            -f Dockerfile.armv7 \
+            -t fb2api-builder \
+            .
+
+      - name: Extract artifact
+        run: |
+          docker create --name extract fb2api-builder
+          docker cp extract:/build/dist/freebuff2api ./freebuff2api-armv7
+          docker rm extract
+          tar -czf freebuff2api-armv7.tar.gz -C freebuff2api-armv7 .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebuff2api-armv7
+          path: freebuff2api-armv7.tar.gz
+          retention-days: 30

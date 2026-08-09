@@ -1,0 +1,34 @@
+# ── 交叉编译 freebuff2api 为 armv7 (armhf 32位) 二进制 ──
+# 目标设备: hi3798mv100 (armv7l) / Ubuntu 20.04 (glibc 2.31)
+# 基镜像用 bullseye (glibc 2.31) 精确匹配设备，避免新 glibc 符号不兼容
+FROM arm32v7/python:3.11-slim-bullseye
+
+WORKDIR /build
+
+# PyInstaller 在 Linux 需要 patchelf；build-essential 用于（万一 wheel 缺 arm 引导器时）编译引导器
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential patchelf \
+    && rm -rf /var/lib/apt/lists/*
+
+# 依赖：刻意不用 uvicorn[standard]（其 watchfiles/uvloop 在 armhf 上需 Rust/轮子，易失败）
+# 纯 uvicorn + h11 在此低资源设备上足够；httpx[socks] 提供代理(住宅代理)支持
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir fastapi "httpx[socks]" python-dotenv uvicorn pyinstaller
+
+COPY . .
+
+# 默认 onedir（文件夹+可执行）：避免 onefile 在 328MB RAM 设备上解包到 /tmp(tmpfs) 触发 OOM。
+# 若坚持单文件，把 --onedir 改为 --onefile 即可（设备内存足够时）。
+RUN pyinstaller --onedir --name freebuff2api --clean --noconfirm \
+      --add-data "freebuff2api/admin_static:freebuff2api/admin_static" \
+      --hidden-import freebuff2api \
+      --hidden-import socksio \
+      --collect-all freebuff2api \
+      --collect-all uvicorn \
+      --collect-all fastapi \
+      --collect-all starlette \
+      --collect-all httpx \
+      --collect-all dotenv \
+      main.py
+
+# 产物: /build/dist/freebuff2api/freebuff2api  (可执行二进制)
