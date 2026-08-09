@@ -7,7 +7,7 @@ WORKDIR /build
 
 # PyInstaller 在 Linux 需要 patchelf；build-essential 用于（万一 wheel 缺 arm 引导器时）编译引导器
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential patchelf \
+    && apt-get install -y --no-install-recommends build-essential patchelf zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 依赖：刻意不用 uvicorn[standard]（其 watchfiles/uvloop 在 armhf 上需 Rust/轮子，易失败）
