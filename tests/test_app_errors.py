@@ -53,7 +53,7 @@ class AppErrorTests(unittest.TestCase):
         self.assertEqual(body["error"]["message"], "network error")
         self.assertEqual(body["error"]["type"], "upstream_error")
 
-    def test_finalize_codebuff_error_logs_warning_without_raising(self) -> None:
+    def test_finalize_skips_management_calls_and_does_not_raise(self) -> None:
         client = FinalizeFailingClient()
         run = FreebuffRun(
             run_id="run-1",
@@ -61,10 +61,11 @@ class AppErrorTests(unittest.TestCase):
             started_at="2026-05-24T00:00:00.000Z",
         )
 
-        with self.assertLogs("freebuff2api.app", level="WARNING") as logs:
-            self.asyncio_run(_finalize_run_with_client(client, run, None))
-
-        self.assertIn("finalize run failed run_id=run-1: network error", logs.output[0])
+        # 精简版（对齐 Worker 1.7.0）：finalize 不再调用 record_step / finish_run，
+        # 即使客户端这些方法抛错也不应触发调用或异常。
+        self.asyncio_run(_finalize_run_with_client(client, run, None))
+        # 若无异常即通过（finish_run 在 FinalizeFailingClient 中会 raise AssertionError，
+        # 若被调用则此处失败）。
 
     def asyncio_run(self, awaitable) -> None:
         import asyncio

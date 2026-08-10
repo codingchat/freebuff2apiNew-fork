@@ -426,8 +426,7 @@ freebuff2apiNew/
 │   ├── codebuff.py        # Freebuff 上游客户端
 │   ├── config.py          # 配置加载
 │   ├── models.py          # 模型定义
-│   ├── buffy_prompt.py    # 🐝 真实 Buffy system 提示词（上游校验必需）
-│   ├── openai_compat.py   # OpenAI 格式兼容层
+│   ├── openai_compat.py   # OpenAI 格式兼容层（注入官方 Buffy 前缀 + end_turn 签名）
 │   ├── anthropic_compat.py # Anthropic 格式兼容层
 │   ├── usage.py           # 数据模型
 │   ├── usage_store.py     # 存储层

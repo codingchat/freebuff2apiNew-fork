@@ -80,8 +80,10 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks[1], "data: [DONE]\n\n")
 
         await asyncio.sleep(0.05)
-        self.assertTrue(client.recorded)
-        self.assertTrue(client.finished)
+        # 精简版（对齐 Worker 1.7.0）：finalize 不再调用 record_step/finish_run，
+        # 只 START 两个 run。断言不再产生管理端调用。
+        self.assertFalse(client.recorded)
+        self.assertFalse(client.finished)
 
     async def test_run_chain_matches_freebuff_parent_child_shape(self) -> None:
         client = FakeClient()
@@ -95,25 +97,8 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
             client.calls[1],
             ("start", "context-pruner", ["run-1"], "run-2"),
         )
-        self.assertEqual(client.calls[2][0], "step")
-        self.assertEqual(client.calls[2][1], ("run-2",))
-        self.assertEqual(client.calls[2][2]["step_number"], 1)
-        self.assertEqual(client.calls[2][2]["child_run_ids"], [])
-        self.assertEqual(client.calls[2][2]["message_id"], None)
-        self.assertEqual(client.calls[3], ("finish", ("run-2",), {"total_steps": 2}))
-        self.assertEqual(
-            client.calls[4],
-            (
-                "step",
-                ("run-1",),
-                {
-                    "step_number": 1,
-                    "child_run_ids": ["run-2"],
-                    "message_id": None,
-                    "start_time": run.started_at,
-                },
-            ),
-        )
+        # 精简版：只 START 两个 run，不再打 record_step / finish_run 管理请求。
+        self.assertEqual(len(client.calls), 2)
 
     async def test_gemini_thinker_run_chain_uses_child_as_payload_run(self) -> None:
         client = FakeClient()

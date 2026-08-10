@@ -168,6 +168,21 @@ def _handle_upstream_error(request: Request, account_index: int | None, error: E
     if not isinstance(error, CodebuffError) or account_index is None:
         return
     accounts: CodebuffAccountPool = request.app.state.accounts
+    # 428 waiting_room_required：缓存 session 已失效（僵尸实例，上游 chat gate 不识别）。
+    # 清除该账号/模型的 session 缓存让下次请求重建，且不记入 failure/rotation，
+    # 避免账号被误判失效（对齐 Worker 1.7.0 stale-session 处理）。
+    if error.status_code == 428:
+        try:
+            account = accounts._accounts[account_index]
+            account.sessions._sessions.pop(model, None)
+        except Exception:
+            pass
+        logger.warning(
+            "session stale (428 waiting_room_required) account=%s model=%s; cache cleared",
+            account_index + 1,
+            model,
+        )
+        return
     accounts.handle_error(account_index, str(error), error.status_code, model)
 
 
@@ -274,7 +289,8 @@ async def chat_completions(request: Request) -> Any:
         )
         client = lease.client
         await client.request_ad_chain(messages=messages)
-        await client.validate_agents()
+        # 不再调用 validate_agents()：/api/agents/validate 是旧 CLI 的额外管理请求，
+        # Worker 1.7.0 桌面版协议不发送，去掉以缩小暴露面。
         run = await _start_freebuff_run_chain(client, model_config)
         trace_session_id = str(uuid.uuid4())
         payload = build_upstream_payload(
@@ -465,28 +481,15 @@ async def _start_freebuff_run_chain(
     if model.parent_agent_id:
         return await _start_child_chat_run_chain(client, model)
 
+    # 精简版（对齐 Worker 1.7.0 startRunChain）：只 START 主 run + context-pruner
+    # 子 run。chat 只校验 run_id 存在，recordRunStep/finishRun 可跳过——去掉这些
+    # 额外管理请求可缩小请求特征暴露面（旧 CLI 行为已被上游统计）。
     agent_id = model.agent_id
     started_at = utc_now_iso()
     run_id = await client.start_run(agent_id)
-    child_started_at = utc_now_iso()
     child_run_id = await client.start_run(
         CONTEXT_PRUNER_AGENT_ID,
         ancestor_run_ids=[run_id],
-    )
-    await client.record_run_step(
-        child_run_id,
-        step_number=1,
-        child_run_ids=[],
-        message_id=None,
-        start_time=child_started_at,
-    )
-    await client.finish_run(child_run_id, total_steps=2)
-    await client.record_run_step(
-        run_id,
-        step_number=1,
-        child_run_ids=[child_run_id],
-        message_id=None,
-        start_time=started_at,
     )
     return FreebuffRun(
         run_id=run_id,
@@ -552,51 +555,13 @@ async def _finalize_run_with_client(
     run: FreebuffRun,
     message_id: str | None,
 ) -> None:
-    try:
-        logger.debug(
-            "finalize run start run_id=%s message_id=%s started_at=%s",
-            run.run_id,
-            message_id,
-            run.started_at,
-        )
-        if run.chat_run_id and run.chat_run_id != run.run_id:
-            await client.record_run_step(
-                run.chat_run_id,
-                step_number=1,
-                child_run_ids=[],
-                message_id=message_id,
-                start_time=run.chat_started_at or run.started_at,
-            )
-            await client.finish_run(run.chat_run_id, total_steps=2)
-            await client.record_run_step(
-                run.run_id,
-                step_number=1,
-                child_run_ids=[run.chat_run_id],
-                message_id=None,
-                start_time=run.started_at,
-            )
-            await client.finish_run(run.run_id, total_steps=2)
-            logger.debug("finalize parent/child run done run_id=%s", run.run_id)
-            return
-
-        await client.record_run_step(
-            run.run_id,
-            step_number=2,
-            child_run_ids=[],
-            message_id=message_id,
-            start_time=run.started_at,
-        )
-        await client.finish_run(run.run_id, total_steps=3)
-        logger.debug("finalize run done run_id=%s", run.run_id)
-    except CodebuffError as error:
-        logger.warning(
-            "finalize run failed run_id=%s: %s",
-            run.run_id,
-            error,
-            exc_info=client.settings.debug,
-        )
-    except Exception:
-        logger.exception("finalize run failed run_id=%s", run.run_id)
+    # 精简版（对齐 Worker 1.7.0）：chat 只校验 run_id 存在，finalize 无需再打
+    # record_step / finish_run 管理请求。保留函数为向后兼容，函数体为空。
+    logger.debug(
+        "finalize run skipped (streamlined) run_id=%s message_id=%s",
+        run.run_id,
+        message_id,
+    )
 
 
 # ── Anthropic Messages API (/v1/messages) ─────────────────────────────
@@ -679,7 +644,7 @@ async def anthropic_messages(request: Request) -> Any:
         )
         client = lease.client
         await client.request_ad_chain()
-        await client.validate_agents()
+        # 同 OpenAI 路径：不再调用 validate_agents()，缩小暴露面。
         run = await _start_freebuff_run_chain(client, model_config)
         trace_session_id = str(uuid.uuid4())
         payload = build_anthropic_upstream_payload(

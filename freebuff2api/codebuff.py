@@ -218,7 +218,7 @@ class CodebuffClient:
         )
 
     async def get_session(self, instance_id: str | None = None) -> dict[str, Any]:
-        headers_extra = {}
+        headers_extra = {"x-freebuff-include-unused-rate-limits": "1"}
         if instance_id:
             headers_extra["x-freebuff-instance-id"] = instance_id
         return await self._json(
@@ -1132,6 +1132,13 @@ def _upstream_error(
         return CodebuffError(
             f"{prefix}: {response.status_code} {text}",
             429,
+        )
+    # 428 waiting_room_required：缓存 session 已失效（僵尸实例）。保留状态码供上层
+    # 清缓存重建（对齐 Worker 1.7.0 的 stale-session 重试逻辑），不要降级成 502。
+    if response.status_code == 428:
+        return CodebuffError(
+            f"{prefix}: {response.status_code} {text}",
+            428,
         )
     if response.status_code == 409:
         try:

@@ -689,7 +689,7 @@ async def chat_test(request: Request) -> dict[str, Any]:
     messages = normalize_chat_messages([{"role": "user", "content": prompt}])
     lease = await request.app.state.accounts.acquire_session(model_config.session_id, messages)
     try:
-        await lease.client.validate_agents()
+        # 与 chat 主链路一致：不再调用 validate_agents()（旧 CLI 管理请求，缩小暴露面）。
         await lease.client.request_ad_chain(messages=messages)
         run = await _start_freebuff_run_chain(lease.client, model_config)
         payload = build_upstream_payload(

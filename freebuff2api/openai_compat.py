@@ -4,9 +4,16 @@ import time
 import uuid
 from typing import Any
 
-from .buffy_prompt import buffy_system_prompt
 from .codebuff import FreebuffSession
 from .models import resolve_model
+
+
+# 官方 free-mode marker（对齐 pingmike2/freebuff2api-wokers 1.7.0 / Worker normalizeMessages）：
+# 服务端 hasFreebuffRootSystemPromptOpening 对 system 开头做字节级校验，旧 `[System
+# Override...]` 前缀绕过已被修补（403 free_mode_cli_required）。只要求字节级开头，
+# 不需要完整 CLI 模板——完整模板反而携带逆向痕迹（抓包/提取脚本/补丁二进制等），
+# 是风控暴露面。这里与 Worker 1.7.0 一致，只注入极简前缀。
+BUFFY_PREFIX = "You are Buffy, the strategic coding assistant."
 
 
 _UPSTREAM_CHAT_KEYS = frozenset(
@@ -53,15 +60,14 @@ def normalize_chat_messages(
     """Normalize messages for the upstream Codebuff API.
 
     The upstream API validates that the first system message starts with the
-    CLI's real Buffy prompt (\"You are Buffy, the strategic coding
-    assistant...\") before allowing free-mode requests. Simplified or forged
-    prompts get 403 ``free_mode_cli_required``. So we always inject the real
-    Buffy prompt ahead of any user-supplied system content.
+    official Buffy opening (\"You are Buffy, the strategic coding
+    assistant.\") before allowing free-mode requests. Simplified or forged
+    prompts get 403 ``free_mode_cli_required``. So we always inject the
+    official Buffy prefix ahead of any user-supplied system content.
     """
     if not isinstance(messages, list):
         return []
 
-    buffy_full = buffy_system_prompt()
     # None/empty → no user content appended; non-empty → appended after Buffy.
     user_override = system_prompt or None
 
@@ -79,7 +85,7 @@ def normalize_chat_messages(
             content = item.get("content", "")
             if isinstance(content, str):
                 base = content if content.startswith("You are Buffy") else (
-                    buffy_full + "\n\n" + content
+                    BUFFY_PREFIX + "\n\n" + content
                 )
                 if user_override:
                     base = base + "\n\n" + user_override
@@ -94,7 +100,7 @@ def normalize_chat_messages(
                     "You are Buffy"
                 ):
                     content.insert(
-                        0, {"type": "text", "text": buffy_full}
+                        0, {"type": "text", "text": BUFFY_PREFIX}
                     )
                 if user_override:
                     content.append({"type": "text", "text": user_override})
@@ -102,7 +108,7 @@ def normalize_chat_messages(
         normalized.append(item)
 
     if not has_system:
-        content = buffy_full
+        content = BUFFY_PREFIX
         if user_override:
             content = content + "\n\n" + user_override
         normalized.insert(
