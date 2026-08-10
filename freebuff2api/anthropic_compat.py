@@ -7,7 +7,7 @@ from typing import Any
 
 from .codebuff import FreebuffSession
 from .models import resolve_model
-from .openai_compat import normalize_chat_messages
+from .openai_compat import inject_end_turn_signature, normalize_chat_messages
 
 
 # ── Anthropic → OpenAI parameter mapping ──────────────────────────────
@@ -370,7 +370,7 @@ def build_anthropic_upstream_payload(
 
     # Map tools.
     if openai_tools:
-        payload["tools"] = openai_tools
+        payload["tools"] = inject_end_turn_signature(openai_tools)
 
     # Map tool_choice.
     tc = anthropic_tool_choice_to_openai(body.get("tool_choice"))

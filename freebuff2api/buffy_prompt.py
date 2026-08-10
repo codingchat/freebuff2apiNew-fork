@@ -236,5 +236,7 @@ Git Changes:
 def buffy_system_prompt(now: datetime | None = None) -> str:
     """Return the Buffy system prompt with the current date substituted."""
     now = now or datetime.now(timezone.utc)
-    now_date = now.strftime("%B %-d, %Y")
+    # 跨平台：%-d 是 GNU 扩展，Windows 的 strftime 不支持会抛 ValueError。
+    # 用 %d 再去掉日期前导零，等价于 GNU 的 %-d。
+    now_date = now.strftime("%B %d, %Y").replace(" 0", " ")
     return _BUFFY_PROMPT_TEMPLATE.replace("{now_date}", now_date).strip()

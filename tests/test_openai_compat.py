@@ -12,6 +12,7 @@ from freebuff2api.models import (
 from freebuff2api.openai_compat import (
     CompletionAccumulator,
     build_upstream_payload,
+    inject_end_turn_signature,
     sanitize_stream_chunk,
 )
 
@@ -102,6 +103,60 @@ class OpenAICompatTests(unittest.TestCase):
                 "cost_mode": "free",
             },
         )
+
+    def test_inject_end_turn_signature_appends_when_missing(self) -> None:
+        tools = [
+            {"type": "function", "function": {"name": "get_weather", "parameters": {}}},
+        ]
+        out = inject_end_turn_signature(tools)
+
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[1]["function"]["name"], "end_turn")
+        # 原列表不被改动（复制新列表）
+        self.assertEqual(len(tools), 1)
+
+    def test_inject_end_turn_signature_idempotent(self) -> None:
+        tools = [
+            {"type": "function", "function": {"name": "end_turn"}},
+            {"type": "function", "function": {"name": "foo"}},
+        ]
+        self.assertEqual(inject_end_turn_signature(tools), tools)
+
+    def test_inject_end_turn_signature_passthrough_empty(self) -> None:
+        self.assertIsNone(inject_end_turn_signature(None))
+        self.assertEqual(inject_end_turn_signature([]), [])
+
+    def test_build_upstream_payload_injects_end_turn_with_tools(self) -> None:
+        payload = build_upstream_payload(
+            {
+                "model": "deepseek/deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {"type": "function", "function": {"name": "get_weather", "parameters": {}}},
+                ],
+            },
+            session=FreebuffSession(instance_id="instance-1", model="deepseek/deepseek-v4-pro"),
+            run_id="run-1",
+            client_id="client-1",
+            trace_session_id="trace-1",
+        )
+
+        self.assertEqual(payload["tools"][-1]["function"]["name"], "end_turn")
+        self.assertEqual(len(payload["tools"]), 2)
+
+    def test_build_upstream_payload_no_tools_no_end_turn(self) -> None:
+        payload = build_upstream_payload(
+            {
+                "model": "deepseek/deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            session=FreebuffSession(instance_id="instance-1", model="deepseek/deepseek-v4-pro"),
+            run_id="run-1",
+            client_id="client-1",
+            trace_session_id="trace-1",
+        )
+
+        self.assertNotIn("tools", payload)
 
     def test_build_upstream_payload_can_override_upstream_model(self) -> None:
         payload = build_upstream_payload(
