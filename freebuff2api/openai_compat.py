@@ -292,12 +292,17 @@ class CompletionAccumulator:
             "role": "assistant",
             "content": self.content,
         }
+        # 对齐 Worker 1.7.2 streamToNonStream：上游只回 reasoning（思考链）而未回
+        # content 时（推理模型常见），用 reasoning 兜底 content，避免客户端收到空响应。
+        if not self.content and self.reasoning_content:
+            message["content"] = self.reasoning_content
+            message["reasoning_used_as_content"] = True
+        elif self.reasoning_content:
+            message["reasoning_content"] = self.reasoning_content
         if self.tool_calls:
             message["tool_calls"] = [
                 self.tool_calls[index] for index in sorted(self.tool_calls)
             ]
-        if self.reasoning_content:
-            message["reasoning_content"] = self.reasoning_content
 
         response = {
             "id": self.id,

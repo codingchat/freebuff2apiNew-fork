@@ -354,6 +354,10 @@ def build_anthropic_upstream_payload(
     payload["messages"] = messages
     payload["stream"] = True
     payload.setdefault("stop", ['"cb_easp"'])
+    # 对齐 Worker 1.7.2 anthropicToChat：流式显式请求 usage，
+    # 否则上游可能不返回 usage，anthropic 流式输出缺 token 统计。
+    if body.get("stream") is True:
+        payload["stream_options"] = {"include_usage": True}
 
     # Map Anthropic stop_sequences → stop (merge with existing stop).
     stop_sequences = body.get("stop_sequences")

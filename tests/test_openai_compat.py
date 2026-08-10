@@ -267,8 +267,11 @@ class OpenAICompatTests(unittest.TestCase):
         response = accumulator.final_response()
 
         message = response["choices"][0]["message"]
-        self.assertEqual(message["content"], "")
-        self.assertEqual(message["reasoning_content"], "hello")
+        # 对齐 Worker 1.7.2：上游只回 reasoning 未回 content 时，用 reasoning 兜底 content，
+        # 避免客户端收到空响应（reasoning_used_as_content 标记）。
+        self.assertEqual(message["content"], "hello")
+        self.assertTrue(message["reasoning_used_as_content"])
+        self.assertNotIn("reasoning_content", message)
 
     def test_accumulator_keeps_final_answer_as_content(self) -> None:
         accumulator = CompletionAccumulator("deepseek/deepseek-v4-flash")

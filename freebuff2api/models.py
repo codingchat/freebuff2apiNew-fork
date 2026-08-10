@@ -29,6 +29,17 @@ FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
     FreebuffModel("minimax/minimax-m3", "base2-free-minimax-m3"),
     FreebuffModel("mimo/mimo-v2.5", "base2-free-mimo"),
     FreebuffModel("mimo/mimo-v2.5-pro", "base2-free-mimo-pro"),
+    # 以下 8 个模型对齐 pingmike2/freebuff2api-wokers v1.7.2 MODELS 表
+    # （来源：Freebuff Desktop orchestrator.js FREEBUFF_ROOT_AGENT_ID_BY_MODEL，2026-08-07 实测同步）
+    FreebuffModel("openai/gpt-5.6-luna", "base2-free-luna"),
+    FreebuffModel("z-ai/glm-5.2", "base2-free-glm"),
+    FreebuffModel("poolside/laguna-s-2.1", "base2-free-laguna-s-2-1"),
+    FreebuffModel("openrouter/poolside/laguna-s-2.1", "base2-free-laguna-s-2-1-openrouter"),
+    FreebuffModel("inclusionai/ling-3.0-flash:free", "base2-free-ling-3-flash"),
+    FreebuffModel("crof/greg-2-ultra", "base2-free-greg-2-ultra"),
+    FreebuffModel("crof/greg-2-super", "base2-free-greg-2-super"),
+    FreebuffModel("anthropic/claude-fable-5", "base2-free-fable"),
+    FreebuffModel("meta/muse-spark-1.2-contributor", "base2-free-muse-spark"),
 )
 
 DEFAULT_MODEL = FREEBUFF_MODELS[0]
