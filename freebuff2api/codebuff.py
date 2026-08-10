@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
@@ -27,12 +28,13 @@ from .token_rotation import (
 logger = logging.getLogger("freebuff2api.codebuff")
 
 CODEBUFF_ACCEPT_ENCODING = "gzip, deflate"
-CODEBUFF_JSON_USER_AGENT = "Bun/1.3.11"
-FREEBUFF_CLI_USER_AGENT = "Freebuff-CLI/0.0.105"
-CHAT_COMPLETIONS_USER_AGENT = (
-    "ai-sdk/openai-compatible/0.0.0-test/codebuff "
-    "ai-sdk/provider-utils/3.0.25 runtime/browser"
-)
+# 桌面版协议伪装（2026-08-10，对齐 pingmike2/freebuff2api-wokers 1.7.0 / issue #13）：
+# 旧版 CLI 指纹（Bun/1.3.11、Freebuff-CLI/0.0.105、旧 ai-sdk 版本号）已被上游
+# detectForeignFreebuffClient / foreign-client-signals.ts 标记，命中后强制降级到
+# 免费层模型（表现为空响应/429），并做账号级统计（终态封禁）。
+# - JSON 请求不再手动设置 User-Agent（httpx 默认），消除 CLI 运行时特征
+# - chat 请求使用官方 SDK 版本号签名（桌面版同款）
+CHAT_COMPLETIONS_USER_AGENT = "ai-sdk/openai-compatible/3.0.20/codebuff"
 
 
 class CodebuffError(RuntimeError):
@@ -112,7 +114,7 @@ class CodebuffClient:
         self,
         *,
         json_body: bool = False,
-        user_agent: str = CODEBUFF_JSON_USER_AGENT,
+        user_agent: str | None = None,
         require_auth: bool = True,
         extra: dict[str, str] | None = None,
     ) -> dict[str, str]:
@@ -124,8 +126,10 @@ class CodebuffClient:
             "Accept-Encoding": CODEBUFF_ACCEPT_ENCODING,
             "Connection": "keep-alive",
             "Host": _host_header(self.settings.codebuff_api_url),
-            "User-Agent": user_agent,
         }
+        # 桌面版协议：默认不手动设置 User-Agent（httpx 默认），避免 CLI 运行时指纹
+        if user_agent:
+            headers["User-Agent"] = user_agent
         if require_auth:
             headers["Authorization"] = f"Bearer {self.settings.codebuff_token}"
         if json_body:
@@ -225,10 +229,18 @@ class CodebuffClient:
 
     async def create_session(self, model: str) -> FreebuffSession:
         logger.info("create freebuff session requested model=%s", model)
+        # 桌面版签名（对齐 Worker 1.7.0）：客户端预生成 instance-id，服务端据此绑定会话，
+        # 避免旧版"服务端分配实例"特征被 detectForeignFreebuffClient 标记。
+        instance_id = str(uuid.uuid4())
         data = await self._json(
             "POST",
             "/api/v1/freebuff/session",
-            headers=self._headers(extra={"x-freebuff-model": model}),
+            headers=self._headers(
+                extra={
+                    "x-freebuff-model": model,
+                    "x-freebuff-instance-id": instance_id,
+                }
+            ),
         )
         if data.get("status") == "queued":
             return await self._wait_for_active_session(data, model)
@@ -325,10 +337,7 @@ class CodebuffClient:
             "POST",
             "/api/v1/ads",
             body=body,
-            headers=self._headers(
-                json_body=True,
-                user_agent=FREEBUFF_CLI_USER_AGENT,
-            ),
+            headers=self._headers(json_body=True),
         )
 
     async def request_ad_chain(
@@ -379,7 +388,6 @@ class CodebuffClient:
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "*/*",
-                    "User-Agent": CODEBUFF_JSON_USER_AGENT,
                 },
             )
         except httpx.RequestError as error:
@@ -404,10 +412,7 @@ class CodebuffClient:
             "POST",
             "/api/v1/ads/impression",
             body={"impUrl": imp_url, "mode": "LITE"},
-            headers=self._headers(
-                json_body=True,
-                user_agent=FREEBUFF_CLI_USER_AGENT,
-            ),
+            headers=self._headers(json_body=True),
         )
 
     async def start_run(
@@ -481,9 +486,18 @@ class CodebuffClient:
 
     async def chat_events(self, payload: dict[str, Any]) -> AsyncIterator[str]:
         url = f"{self.settings.codebuff_api_url}/api/v1/chat/completions"
+        extra: dict[str, str] = {}
+        # 桌面版签名（对齐 Worker 1.7.0）：chat 请求头带 x-freebuff-instance-id，
+        # 上游据此识别桌面端实例；缺省会落入旧 CLI 会话特征。
+        instance_id = (payload.get("codebuff_metadata") or {}).get(
+            "freebuff_instance_id"
+        )
+        if instance_id:
+            extra["x-freebuff-instance-id"] = str(instance_id)
         request_headers = self._headers(
             json_body=True,
             user_agent=CHAT_COMPLETIONS_USER_AGENT,
+            extra=extra,
         )
         try:
             async with (await self._ensure_client()).stream(
