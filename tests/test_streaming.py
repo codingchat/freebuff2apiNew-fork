@@ -47,6 +47,27 @@ class FailingStreamClient(FakeClient):
         yield
 
 
+class NoDoneStreamClient(FakeClient):
+    """上游 EOF 但从不发 [DONE]（免费通道长对话常见行为）。"""
+
+    async def chat_events(self, payload):
+        yield (
+            'data: {"id":"chunk-1","object":"chat.completion.chunk",'
+            '"created":1,"model":"deepseek/deepseek-v4-flash",'
+            '"choices":[{"index":0,"delta":{"content":"answer",'
+            '"reasoning_content":null},"finish_reason":"stop"}]}'
+        )
+        # 不 yield "[DONE]",直接 EOF
+
+
+class UnexpectedErrorStreamClient(FakeClient):
+    """上游流中途抛未预期异常（非 CodebuffError）。"""
+
+    async def chat_events(self, payload):
+        yield 'data: {"id":"chunk-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
+        raise RuntimeError("stream broke mid-way")
+
+
 class StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_forwards_content_before_finalize(self) -> None:
         client = FakeClient()
@@ -165,6 +186,65 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         error_payload = json.loads(chunks[0].removeprefix("data: ").strip())
         self.assertEqual(error_payload["error"]["code"], "codebuff_error")
         self.assertEqual(chunks[1], "data: [DONE]\n\n")
+
+    async def test_stream_appends_done_when_upstream_eof_without_done(self) -> None:
+        client = NoDoneStreamClient()
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    codebuff=client,
+                    settings=Settings(
+                        codebuff_token="token",
+                        local_api_key=None,
+                        debug=False,
+                    ),
+                )
+            )
+        )
+        run = FreebuffRun(
+            run_id="run-1",
+            agent_id="base2-free-deepseek-flash",
+            started_at="2026-05-23T00:00:00.000Z",
+        )
+
+        chunks = [
+            chunk.decode("utf-8")
+            async for chunk in _stream_openai_chunks(request, {}, run)
+        ]
+
+        # 上游 EOF 无 [DONE] → 末尾补发 [DONE]，客户端不会报 "terminated"
+        self.assertEqual(chunks[-1], "data: [DONE]\n\n")
+        self.assertEqual(chunks[0].count("[DONE]"), 0)  # 内容块正常透传
+
+    async def test_stream_unexpected_error_still_emits_done(self) -> None:
+        client = UnexpectedErrorStreamClient()
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    codebuff=client,
+                    settings=Settings(
+                        codebuff_token="token",
+                        local_api_key=None,
+                        debug=False,
+                    ),
+                )
+            )
+        )
+        run = FreebuffRun(
+            run_id="run-1",
+            agent_id="base2-free-deepseek-flash",
+            started_at="2026-05-23T00:00:00.000Z",
+        )
+
+        chunks = [
+            chunk.decode("utf-8")
+            async for chunk in _stream_openai_chunks(request, {}, run)
+        ]
+
+        # 未预期异常也要发 error + [DONE]，不允许连接裸断
+        error_payload = json.loads(chunks[-2].removeprefix("data: ").strip())
+        self.assertEqual(error_payload["error"]["code"], "codebuff_error")
+        self.assertEqual(chunks[-1], "data: [DONE]\n\n")
 
 
 if __name__ == "__main__":

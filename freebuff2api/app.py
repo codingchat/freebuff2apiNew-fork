@@ -374,6 +374,7 @@ async def _stream_openai_chunks(
     message_id: str | None = None
     client = client or (account_lease.client if account_lease else _client(request))
     settings = _settings(request)
+    done_sent = False
     try:
         async for line in client.chat_events(payload):
             data = decode_sse_data(line)
@@ -387,6 +388,7 @@ async def _stream_openai_chunks(
                         message_id,
                     )
                 yield encode_sse("[DONE]")
+                done_sent = True
                 break
 
             message_id = data.get("id") or message_id
@@ -425,7 +427,35 @@ async def _stream_openai_chunks(
             }
         )
         yield encode_sse("[DONE]")
+        done_sent = True
+    except Exception as error:
+        # 兜底：任何未预期异常（上游断流/解析异常等）也发 error + [DONE]，
+        # 避免生成器裸抛导致连接直接关闭（客户端报 "terminated / other side closed"）。
+        if account_lease is not None:
+            _handle_upstream_error(request, account_lease._account_index, error, payload.get("model", ""))
+        logger.exception(
+            "chat stream unexpected error run_id=%s",
+            run.run_id,
+        )
+        if api_key:
+            duration_ms = int((time.time() - started) * 1000)
+            _record_request(request, api_key, payload.get("model", ""), duration_ms, "error", error=str(error))
+        yield encode_sse(
+            {
+                "error": {
+                    "message": str(error),
+                    "type": "upstream_error",
+                    "code": "codebuff_error",
+                }
+            }
+        )
+        yield encode_sse("[DONE]")
+        done_sent = True
     finally:
+        # 上游 EOF 但未发 [DONE]（免费通道长对话常见）→ 补发终止符，
+        # 否则客户端等 [DONE] 等到连接关闭报 "terminated"。
+        if not done_sent:
+            yield encode_sse("[DONE]")
         if api_key:
             duration_ms = int((time.time() - started) * 1000)
             _record_request(request, api_key, payload.get("model", ""), duration_ms, "success")
@@ -739,6 +769,7 @@ async def _stream_anthropic_events(
     settings = _settings(request)
     state = AnthropicStreamState(model=requested_model or payload.get("model", ""))
     _ping_active = True
+    finalized = False
 
     async def _ping_loop() -> None:
         """Send ping every ~15 s to keep the connection alive across proxies."""
@@ -750,6 +781,14 @@ async def _stream_anthropic_events(
         except asyncio.CancelledError:
             pass
 
+    def _emit_finalize():
+        nonlocal finalized
+        if finalized:
+            return
+        finalized = True
+        for event_type, event_data in state.finalize_events():
+            yield anthropic_sse_encode(event_type, event_data)
+
     try:
         async for line in client.chat_events(payload):
             data = decode_sse_data(line)
@@ -757,8 +796,8 @@ async def _stream_anthropic_events(
                 continue
             if data == "[DONE]":
                 # Emit final events.
-                for event_type, event_data in state.finalize_events():
-                    yield anthropic_sse_encode(event_type, event_data)
+                for sse_line in _emit_finalize():
+                    yield sse_line
                 break
 
             for event_type, event_data in state.consume_chunk(data):
@@ -780,7 +819,25 @@ async def _stream_anthropic_events(
         )
         error_payload = anthropic_error_payload(str(error))
         yield anthropic_sse_encode("error", error_payload)
+        # 错误后也补 finalize（message_stop），保证 Anthropic 客户端能收尾
+        for sse_line in _emit_finalize():
+            yield sse_line
+    except Exception as error:
+        if account_lease is not None:
+            _handle_upstream_error(request, account_lease._account_index, error, requested_model or payload.get("model", ""))
+        logger.exception(
+            "anthropic stream unexpected error run_id=%s",
+            run.run_id,
+        )
+        error_payload = anthropic_error_payload(str(error))
+        yield anthropic_sse_encode("error", error_payload)
+        for sse_line in _emit_finalize():
+            yield sse_line
     finally:
+        # 上游 EOF 但未发 [DONE]（免费通道长对话常见）→ 补 finalize（message_stop），
+        # 否则 Anthropic 客户端悬挂/报 "terminated / other side closed"。
+        for sse_line in _emit_finalize():
+            yield sse_line
         if api_key:
             duration_ms = int((time.time() - started) * 1000)
             _record_request(request, api_key, payload.get("model", ""), duration_ms, "success")
