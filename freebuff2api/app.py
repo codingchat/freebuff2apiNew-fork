@@ -202,6 +202,43 @@ def _handle_upstream_error(request: Request, account_index: int | None, error: E
     accounts.handle_error(account_index, str(error), error.status_code, model)
 
 
+async def _recreate_session_and_run_for_retry(
+    account_lease: CodebuffAccountLease,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """空流恢复（对齐 pingmike2/freebuff2api-wokers v1.8.5 empty-stream recovery）：
+
+    上游 200 但返回空流（首 chunk 即 EOF，常见于免费通道长对话/额度脏状态）时，
+    删除上游 session → 重建同模型 session → 重新 START run → 重建 payload 重试一次。
+    只重建同模型，绝不改成别的模型（v1.8.5 明确语义）。失败返回 None 交由上层报错。
+    """
+    try:
+        account = account_lease._pool._accounts[account_lease._account_index]
+        client = account.client
+        sessions = account.sessions
+        model = payload.get("model") or ""
+        await client.delete_session(account_lease.session.instance_id)
+        sessions._sessions.clear()
+        new_session = await sessions.create_session(model)
+        sessions._sessions[model] = new_session
+        new_run = await _start_freebuff_run_chain(client, model)
+        client_id = (payload.get("codebuff_metadata") or {}).get("client_id") or ""
+        return build_upstream_payload(
+            payload,
+            session=new_session,
+            run_id=new_run.payload_run_id,
+            client_id=client_id,
+            trace_session_id=str(uuid.uuid4()),
+        )
+    except Exception as error:
+        logger.warning(
+            "empty stream retry failed model=%s: %s",
+            payload.get("model"),
+            error,
+        )
+        return None
+
+
 def _record_request(
     request: Request,
     api_key,
@@ -391,36 +428,64 @@ async def _stream_openai_chunks(
     client = client or (account_lease.client if account_lease else _client(request))
     settings = _settings(request)
     done_sent = False
+    chunk_yielded = False
+    retried = False
     try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
-            if data is None:
-                continue
-            if data == "[DONE]":
-                if settings.debug:
-                    logger.debug(
-                        "chat stream done run_id=%s message_id=%s",
-                        run.run_id,
-                        message_id,
-                    )
-                yield encode_sse("[DONE]")
-                done_sent = True
-                break
+        while True:
+            try:
+                async for line in client.chat_events(payload):
+                    data = decode_sse_data(line)
+                    if data is None:
+                        continue
+                    if data == "[DONE]":
+                        if settings.debug:
+                            logger.debug(
+                                "chat stream done run_id=%s message_id=%s",
+                                run.run_id,
+                                message_id,
+                            )
+                        yield encode_sse("[DONE]")
+                        done_sent = True
+                        break
 
-            message_id = data.get("id") or message_id
-            chunk = sanitize_stream_chunk(data)
-            if chunk is not None:
-                if settings.debug:
-                    logger.debug(
-                        "chat stream chunk=%s",
-                        render_debug(chunk, settings.log_body_chars),
+                    message_id = data.get("id") or message_id
+                    chunk = sanitize_stream_chunk(data)
+                    if chunk is not None:
+                        if settings.debug:
+                            logger.debug(
+                                "chat stream chunk=%s",
+                                render_debug(chunk, settings.log_body_chars),
+                            )
+                        yield encode_sse(chunk)
+                        chunk_yielded = True
+                    elif settings.debug:
+                        logger.debug(
+                            "chat stream ignored data=%s",
+                            render_debug(data, settings.log_body_chars),
+                        )
+                break
+            except CodebuffError as error:
+                # 空流恢复（对齐 v1.8.5）：上游 200 但首 chunk 即 EOF → 删上游 session、
+                # 重建同模型 session + 重新 START run 后重试一次。仅在尚未发出任何内容
+                # chunk 时重试（已发内容无法回滚）。绝不改成别的模型。
+                if (
+                    not chunk_yielded
+                    and not retried
+                    and "empty stream" in str(error)
+                    and account_lease is not None
+                ):
+                    retried = True
+                    new_payload = await _recreate_session_and_run_for_retry(
+                        account_lease, payload
                     )
-                yield encode_sse(chunk)
-            elif settings.debug:
-                logger.debug(
-                    "chat stream ignored data=%s",
-                    render_debug(data, settings.log_body_chars),
-                )
+                    if new_payload is not None:
+                        payload = new_payload
+                        logger.warning(
+                            "empty stream detected; recreated session and retrying model=%s",
+                            payload.get("model"),
+                        )
+                        continue
+                raise
     except CodebuffError as error:
         if account_lease is not None:
             _handle_upstream_error(request, account_lease._account_index, error, payload.get("model", ""))
@@ -786,6 +851,7 @@ async def _stream_anthropic_events(
     state = AnthropicStreamState(model=requested_model or payload.get("model", ""))
     _ping_active = True
     finalized = False
+    retried = False
 
     async def _ping_loop() -> None:
         """Send ping every ~15 s to keep the connection alive across proxies."""
@@ -806,24 +872,51 @@ async def _stream_anthropic_events(
             yield anthropic_sse_encode(event_type, event_data)
 
     try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
-            if data is None:
-                continue
-            if data == "[DONE]":
-                # Emit final events.
-                for sse_line in _emit_finalize():
-                    yield sse_line
-                break
+        while True:
+            try:
+                async for line in client.chat_events(payload):
+                    data = decode_sse_data(line)
+                    if data is None:
+                        continue
+                    if data == "[DONE]":
+                        # Emit final events.
+                        for sse_line in _emit_finalize():
+                            yield sse_line
+                        break
 
-            for event_type, event_data in state.consume_chunk(data):
-                if settings.debug:
-                    logger.debug(
-                        "anthropic stream event=%s data=%s",
-                        event_type,
-                        render_debug(event_data, settings.log_body_chars),
+                    for event_type, event_data in state.consume_chunk(data):
+                        if settings.debug:
+                            logger.debug(
+                                "anthropic stream event=%s data=%s",
+                                event_type,
+                                render_debug(event_data, settings.log_body_chars),
+                            )
+                        yield anthropic_sse_encode(event_type, event_data)
+                break
+            except CodebuffError as error:
+                # 空流恢复（对齐 v1.8.5）：尚未发出任何事件时遇到空流 →
+                # 重建同模型 session + run 后重试一次。
+                if (
+                    finalized is False
+                    and not retried
+                    and "empty stream" in str(error)
+                    and account_lease is not None
+                ):
+                    retried = True
+                    new_payload = await _recreate_session_and_run_for_retry(
+                        account_lease, payload
                     )
-                yield anthropic_sse_encode(event_type, event_data)
+                    if new_payload is not None:
+                        payload = new_payload
+                        state = AnthropicStreamState(
+                            model=requested_model or payload.get("model", "")
+                        )
+                        logger.warning(
+                            "empty stream detected; recreated session and retrying model=%s",
+                            payload.get("model"),
+                        )
+                        continue
+                raise
     except CodebuffError as error:
         if account_lease is not None:
             _handle_upstream_error(request, account_lease._account_index, error, requested_model or payload.get("model", ""))

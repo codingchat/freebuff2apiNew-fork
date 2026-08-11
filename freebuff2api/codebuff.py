@@ -293,11 +293,14 @@ class CodebuffClient:
 
         return self._session_from_data(data, model, instance_id=instance_id)
 
-    async def delete_session(self) -> None:
+    async def delete_session(self, instance_id: str | None = None) -> None:
+        extra = {}
+        if instance_id:
+            extra["x-freebuff-instance-id"] = instance_id
         await self._json(
             "DELETE",
             "/api/v1/freebuff/session",
-            headers=self._headers(),
+            headers=self._headers(extra=extra),
         )
         logger.info("deleted active freebuff session")
 
@@ -525,7 +528,25 @@ class CodebuffClient:
                         body=text,
                         prefix="Codebuff chat failed",
                     )
-                async for line in response.aiter_lines():
+                # 预读首行（对齐 pingmike2/freebuff2api-wokers v1.8.5 fetchStreamWithQuotaGuard）：
+                # 上游 200 但流为空（首 chunk 即 EOF，常见于免费通道长对话/额度脏状态）
+                # 时，抛带 "empty stream" 标记的 CodebuffError，供上层同模型 session
+                # 重建后重试一次，避免客户端收到空响应 / "terminated"。
+                lines = response.aiter_lines()
+                try:
+                    first_line = await lines.__anext__()
+                except StopAsyncIteration:
+                    raise CodebuffError(
+                        "Codebuff chat returned empty stream",
+                        502,
+                    ) from None
+                if self.settings.debug:
+                    logger.debug(
+                        "chat stream line=%s",
+                        render_debug(first_line, self.settings.log_body_chars),
+                    )
+                yield first_line
+                async for line in lines:
                     if self.settings.debug:
                         logger.debug(
                             "chat stream line=%s",

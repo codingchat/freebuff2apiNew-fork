@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 from freebuff2api.app import _start_freebuff_run_chain, _stream_openai_chunks
-from freebuff2api.codebuff import CodebuffError, FreebuffRun
+from freebuff2api.codebuff import CodebuffError, FreebuffRun, FreebuffSession
 from freebuff2api.config import Settings
 from freebuff2api.models import resolve_model
 
@@ -66,6 +66,64 @@ class UnexpectedErrorStreamClient(FakeClient):
     async def chat_events(self, payload):
         yield 'data: {"id":"chunk-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
         raise RuntimeError("stream broke mid-way")
+
+
+class EmptyThenOkStreamClient(FakeClient):
+    """第一次调用返回空流错误，第二次返回正常内容（验证空流重试）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.chat_calls = 0
+
+    async def delete_session(self, instance_id=None) -> None:
+        return None
+
+    async def chat_events(self, payload):
+        self.chat_calls += 1
+        if self.chat_calls == 1:
+            raise CodebuffError("Codebuff chat returned empty stream", 502)
+        yield (
+            'data: {"id":"chunk-1","object":"chat.completion.chunk",'
+            '"created":1,"model":"deepseek/deepseek-v4-flash",'
+            '"choices":[{"index":0,"delta":{"content":"ok",'
+            '"reasoning_content":null},"finish_reason":"stop"}]}'
+        )
+        yield "data: [DONE]"
+
+
+def _fake_lease_for(client) -> SimpleNamespace:
+    """构造与 CodebuffAccountLease 兼容的桩（空流重试 helper 依赖其内部结构）。"""
+
+    class _Sessions:
+        def __init__(self, c):
+            self.client = c
+            self._sessions = {}
+
+        async def create_session(self, model):
+            session = FreebuffSession(instance_id="new-instance", model=model)
+            self._sessions[model] = session
+            return session
+
+    class _Account:
+        def __init__(self, c):
+            self.client = c
+            self.sessions = _Sessions(c)
+
+    class _Pool:
+        def __init__(self, c):
+            self._accounts = [_Account(c)]
+
+    return _FakeLease(
+        client=client,
+        session=FreebuffSession(instance_id="old-instance", model="deepseek/deepseek-v4-flash"),
+        _pool=_Pool(client),
+        _account_index=0,
+    )
+
+
+class _FakeLease(SimpleNamespace):
+    async def aclose(self) -> None:
+        return None
 
 
 class StreamingTests(unittest.IsolatedAsyncioTestCase):
@@ -245,6 +303,45 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         error_payload = json.loads(chunks[-2].removeprefix("data: ").strip())
         self.assertEqual(error_payload["error"]["code"], "codebuff_error")
         self.assertEqual(chunks[-1], "data: [DONE]\n\n")
+
+    async def test_stream_retries_on_empty_stream(self) -> None:
+        client = EmptyThenOkStreamClient()
+        lease = _fake_lease_for(client)
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    codebuff=client,
+                    settings=Settings(
+                        codebuff_token="token",
+                        local_api_key=None,
+                        debug=False,
+                    ),
+                )
+            )
+        )
+        run = FreebuffRun(
+            run_id="run-1",
+            agent_id="base2-free-deepseek-flash",
+            started_at="2026-05-23T00:00:00.000Z",
+        )
+        payload = {
+            "model": "deepseek/deepseek-v4-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "codebuff_metadata": {"client_id": "c1", "freebuff_instance_id": "old"},
+        }
+
+        chunks = [
+            chunk.decode("utf-8")
+            async for chunk in _stream_openai_chunks(
+                request, payload, run, account_lease=lease
+            )
+        ]
+
+        # 空流 → 重建 session + 重试一次 → 客户端拿到正常内容 + [DONE]
+        self.assertEqual(client.chat_calls, 2)
+        self.assertEqual(chunks[-1], "data: [DONE]\n\n")
+        joined = "".join(chunks)
+        self.assertIn('"content":"ok"', joined)
 
 
 if __name__ == "__main__":
