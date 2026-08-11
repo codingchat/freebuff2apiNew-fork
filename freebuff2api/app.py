@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import ClientDisconnect
 
 from .admin import router as admin_router
 from .codebuff import (
@@ -80,6 +81,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="freebuff2api", version="0.1.0", lifespan=lifespan)
 app.include_router(admin_router)
+
+
+@app.exception_handler(ClientDisconnect)
+async def _handle_client_disconnect(request: Request, exc: ClientDisconnect) -> JSONResponse:
+    """客户端在请求体读完前断开（用户停止/网络中断）→ 静默结束，不打 ERROR 堆栈。
+
+    这是常态而非故障：request.json() 读到一半客户端断开会抛 ClientDisconnect，
+    若不加 handler 会在 uvicorn 层打出整段 traceback 干扰监控。客户端已断开，
+    响应实际送不出去，这里返回 499（Nginx 语义）仅作记录。
+    """
+    logger.info(
+        "client disconnected before request body complete path=%s",
+        request.url.path,
+    )
+    return JSONResponse(status_code=499, content={"error": {"message": "client closed connection", "type": "client_disconnect"}})
 
 
 def _settings(request: Request) -> Settings:
