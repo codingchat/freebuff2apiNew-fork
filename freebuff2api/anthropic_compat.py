@@ -7,7 +7,11 @@ from typing import Any
 
 from .codebuff import FreebuffSession
 from .models import resolve_model
-from .openai_compat import inject_end_turn_signature, normalize_chat_messages
+from .openai_compat import (
+    clamp_output_tokens,
+    inject_end_turn_signature,
+    normalize_chat_messages,
+)
 
 
 # ── Anthropic → OpenAI parameter mapping ──────────────────────────────
@@ -358,6 +362,13 @@ def build_anthropic_upstream_payload(
     # 否则上游可能不返回 usage，anthropic 流式输出缺 token 统计。
     if body.get("stream") is True:
         payload["stream_options"] = {"include_usage": True}
+    # 输出上限：先钳制到模型上限（客户端可能传 64,000 等超限值 → 上游空流），
+    # 再按 Worker 1.7.2 惯例映射为 max_completion_tokens（deepseek 等上游
+    # 对旧字段 max_tokens 的校验更严）。输入上下文由 /v1/models 下发的
+    # context_window 让客户端自适应。
+    clamp_output_tokens(payload, model_id or body.get("model"))
+    if "max_tokens" in payload and "max_completion_tokens" not in payload:
+        payload["max_completion_tokens"] = payload.pop("max_tokens")
 
     # Map Anthropic stop_sequences → stop (merge with existing stop).
     stop_sequences = body.get("stop_sequences")

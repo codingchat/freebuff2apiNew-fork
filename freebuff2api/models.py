@@ -11,6 +11,13 @@ class FreebuffModel:
     upstream_model_id: str | None = None
     session_model_id: str | None = None
     parent_agent_id: str | None = None
+    # 模型参数（供 /v1/models 下发，客户端据此自适应钳制输出/上下文）。
+    # 实测来源：yuzu-octopus/freebuff2api router/config.ts MODEL_CATALOG
+    # （"contextWindow values are measured from real provider rejections"）。
+    context_window: int = 131_072  # 保守默认（未实测模型）
+    max_output_tokens: int = 32_768  # 统一保守输出上限（上游实测）
+    input_modalities: tuple[str, ...] = ("text",)
+    output_modalities: tuple[str, ...] = ("text",)
 
     @property
     def upstream_id(self) -> str:
@@ -22,17 +29,39 @@ class FreebuffModel:
 
 
 FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
-    FreebuffModel("deepseek/deepseek-v4-flash", "base2-free-deepseek-flash"),
-    FreebuffModel("deepseek/deepseek-v4-pro", "base2-free-deepseek"),
+    FreebuffModel(
+        "deepseek/deepseek-v4-flash",
+        "base2-free-deepseek-flash",
+        context_window=1_048_576,
+    ),
+    FreebuffModel(
+        "deepseek/deepseek-v4-pro",
+        "base2-free-deepseek",
+        context_window=131_072,
+    ),
     FreebuffModel("moonshotai/kimi-k2.6", "base2-free-kimi"),
     FreebuffModel("minimax/minimax-m2.7", "base2-free"),
-    FreebuffModel("minimax/minimax-m3", "base2-free-minimax-m3"),
-    FreebuffModel("mimo/mimo-v2.5", "base2-free-mimo"),
+    FreebuffModel(
+        "minimax/minimax-m3",
+        "base2-free-minimax-m3",
+        context_window=524_288,
+        input_modalities=("text", "image"),
+        output_modalities=("text",),
+    ),
+    FreebuffModel("mimo/mimo-v2.5", "base2-free-mimo", context_window=131_072),
     FreebuffModel("mimo/mimo-v2.5-pro", "base2-free-mimo-pro"),
     # 以下 8 个模型对齐 pingmike2/freebuff2api-wokers v1.7.2 MODELS 表
     # （来源：Freebuff Desktop orchestrator.js FREEBUFF_ROOT_AGENT_ID_BY_MODEL，2026-08-07 实测同步）
-    FreebuffModel("openai/gpt-5.6-luna", "base2-free-luna"),
-    FreebuffModel("z-ai/glm-5.2", "base2-free-glm"),
+    FreebuffModel(
+        "openai/gpt-5.6-luna",
+        "base2-free-luna",
+        context_window=1_000_000,
+    ),
+    FreebuffModel(
+        "z-ai/glm-5.2",
+        "base2-free-glm",
+        context_window=131_072,
+    ),
     FreebuffModel("poolside/laguna-s-2.1", "base2-free-laguna-s-2-1"),
     FreebuffModel("openrouter/poolside/laguna-s-2.1", "base2-free-laguna-s-2-1-openrouter"),
     FreebuffModel("inclusionai/ling-3.0-flash:free", "base2-free-ling-3-flash"),
@@ -87,30 +116,35 @@ def resolve_model(requested: str | None) -> FreebuffModel:
     raise ValueError(f"Unsupported Freebuff model: {requested}")
 
 
+def _model_entry(model: FreebuffModel) -> dict[str, object]:
+    """模型条目：OpenAI 标准字段 + Anthropic Models API 字段（附加，客户端自适应）。"""
+    return {
+        "id": model.id,
+        "object": "model",
+        "created": 0,
+        "owned_by": model.owned_by,
+        # Anthropic Models API 字段（Claude Code / anthropic-sdk 读取，
+        # 用于 context sizing 与输出上限自适应）。
+        "type": "model",
+        "display_name": model.id,
+        "context_window": model.context_window,
+        "max_output_tokens": model.max_output_tokens,
+        "input_modalities": list(model.input_modalities),
+        "output_modalities": list(model.output_modalities),
+    }
+
+
 def models_response() -> dict[str, object]:
     return {
         "object": "list",
-        "data": [
-            {
-                "id": model.id,
-                "object": "model",
-                "created": 0,
-                "owned_by": model.owned_by,
-            }
-            for model in ALL_MODELS
-        ],
+        "data": [_model_entry(model) for model in ALL_MODELS],
     }
 
 
 def model_response(model_id: str) -> dict[str, object] | None:
     for model in ALL_MODELS:
         if model.id == model_id:
-            return {
-                "id": model.id,
-                "object": "model",
-                "created": 0,
-                "owned_by": model.owned_by,
-            }
+            return _model_entry(model)
     return None
 
 

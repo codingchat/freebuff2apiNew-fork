@@ -156,6 +156,31 @@ def inject_end_turn_signature(
     ]
 
 
+def clamp_output_tokens(
+    payload: dict[str, Any],
+    model_id: str | None,
+) -> dict[str, Any]:
+    """钳制输出 token 上限（max_tokens / max_completion_tokens）到模型上限。
+
+    上游免费层对单次输出有保守上限（实测 32,768；yuzu config.ts 标注
+    "maxOutputTokens is a conservative ceiling"）。客户端传 64,000 等超限值
+    时上游可能静默返回空流/截断 → 客户端空响应。这里按模型表钳制。
+    注：输入上下文由 context_window 管控，客户端通过 /v1/models 读取自适应。
+    """
+    if not payload.get("model"):
+        return payload
+    try:
+        model = resolve_model(model_id or payload["model"])
+    except ValueError:
+        return payload
+    limit = model.max_output_tokens
+    for key in ("max_tokens", "max_completion_tokens"):
+        value = payload.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            payload[key] = max(1, min(int(value), limit))
+    return payload
+
+
 def build_upstream_payload(
     body: dict[str, Any],
     *,
@@ -181,6 +206,9 @@ def build_upstream_payload(
     # 绕过上游 foreign_toolset 检测：带 tools 时注入官方专属名 end_turn（见 inject_end_turn_signature）
     if payload.get("tools") is not None:
         payload["tools"] = inject_end_turn_signature(payload["tools"])
+
+    # 钳制输出上限（chat completions 路径，对齐 anthropic 路径行为）
+    clamp_output_tokens(payload, body.get("model"))
 
     payload["provider"] = {"data_collection": "deny"}
     payload["codebuff_metadata"] = {

@@ -249,6 +249,8 @@ GET /v1/models
 Authorization: Bearer YOUR_API_KEY
 ```
 
+> 返回每个模型的 `context_window` / `max_output_tokens` / `input_modalities` / `output_modalities`(Anthropic Models API 兼容字段),Claude Code 等客户端据此自适应钳制上下文与输出上限,避免因 `max_tokens` 超上游免费层上限(32,768)导致空响应。
+
 #### Chat Completions
 
 ```http

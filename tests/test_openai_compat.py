@@ -246,6 +246,27 @@ class OpenAICompatTests(unittest.TestCase):
         self.assertEqual(payload["provider"], {"data_collection": "deny"})
         self.assertEqual(payload["codebuff_metadata"]["cost_mode"], "free")
 
+    def test_build_upstream_payload_clamps_max_tokens(self) -> None:
+        payload = build_upstream_payload(
+            {
+                "model": "deepseek/deepseek-v4-flash",
+                "messages": [],
+                "max_tokens": 64000,
+                "max_completion_tokens": 100000,
+            },
+            session=FreebuffSession(
+                instance_id="instance-1",
+                model="deepseek/deepseek-v4-flash",
+            ),
+            run_id="run-1",
+            client_id="client-1",
+            trace_session_id="trace-1",
+        )
+
+        # 超模型上限 32768 → 钳制（chat completions 路径保留原字段名）
+        self.assertEqual(payload["max_tokens"], 32_768)
+        self.assertEqual(payload["max_completion_tokens"], 32_768)
+
     def test_accumulator_keeps_reasoning_content_separate(self) -> None:
         accumulator = CompletionAccumulator("deepseek/deepseek-v4-flash")
 
