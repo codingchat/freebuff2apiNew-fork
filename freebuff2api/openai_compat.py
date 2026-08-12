@@ -4,9 +4,15 @@ import time
 import uuid
 from typing import Any
 
-from .buffy_prompt import buffy_system_prompt
 from .codebuff import FreebuffSession
 from .models import resolve_model
+
+
+# 最小风控：官方 free-mode marker 要求 system 以 "You are Buffy, the strategic coding
+# assistant." 字节级开头（服务端 hasFreebuffRootSystemPromptOpening 校验）。只注入
+# 极简前缀即可——完整 CLI 模板（旧 buffy_prompt.py）携带逆向痕迹（抓包/提取脚本/
+# 补丁二进制等），是风控暴露面。
+BUFFY_PREFIX = "You are Buffy, the strategic coding assistant."
 
 
 _UPSTREAM_CHAT_KEYS = frozenset(
@@ -61,7 +67,6 @@ def normalize_chat_messages(
     if not isinstance(messages, list):
         return []
 
-    buffy_full = buffy_system_prompt()
     # None/empty → no user content appended; non-empty → appended after Buffy.
     user_override = system_prompt or None
 
@@ -79,7 +84,7 @@ def normalize_chat_messages(
             content = item.get("content", "")
             if isinstance(content, str):
                 base = content if content.startswith("You are Buffy") else (
-                    buffy_full + "\n\n" + content
+                    BUFFY_PREFIX + "\n\n" + content
                 )
                 if user_override:
                     base = base + "\n\n" + user_override
@@ -94,7 +99,7 @@ def normalize_chat_messages(
                     "You are Buffy"
                 ):
                     content.insert(
-                        0, {"type": "text", "text": buffy_full}
+                        0, {"type": "text", "text": BUFFY_PREFIX}
                     )
                 if user_override:
                     content.append({"type": "text", "text": user_override})
@@ -102,7 +107,7 @@ def normalize_chat_messages(
         normalized.append(item)
 
     if not has_system:
-        content = buffy_full
+        content = BUFFY_PREFIX
         if user_override:
             content = content + "\n\n" + user_override
         normalized.insert(

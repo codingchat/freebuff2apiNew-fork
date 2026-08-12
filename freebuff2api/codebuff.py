@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
@@ -27,12 +28,11 @@ from .token_rotation import (
 logger = logging.getLogger("freebuff2api.codebuff")
 
 CODEBUFF_ACCEPT_ENCODING = "gzip, deflate"
-CODEBUFF_JSON_USER_AGENT = "Bun/1.3.11"
-FREEBUFF_CLI_USER_AGENT = "Freebuff-CLI/0.0.105"
-CHAT_COMPLETIONS_USER_AGENT = (
-    "ai-sdk/openai-compatible/0.0.0-test/codebuff "
-    "ai-sdk/provider-utils/3.0.25 runtime/browser"
-)
+# 最小风控更新（基于 main 0f2ff59，仅去风控特征，不改功能/模型切换逻辑）：
+# 旧版 CLI 指纹（Bun/1.3.11、Freebuff-CLI/0.0.105、旧 ai-sdk 版本号）已被上游
+# detectForeignFreebuffClient 标记 → 降级免费层 + 账号级封禁统计。JSON 请求不再
+# 手动设置 User-Agent（httpx 默认）；chat 使用官方 SDK 版本号签名。
+CHAT_COMPLETIONS_USER_AGENT = "ai-sdk/openai-compatible/3.0.20/codebuff"
 
 
 class CodebuffError(RuntimeError):
@@ -112,7 +112,7 @@ class CodebuffClient:
         self,
         *,
         json_body: bool = False,
-        user_agent: str = CODEBUFF_JSON_USER_AGENT,
+        user_agent: str | None = None,
         require_auth: bool = True,
         extra: dict[str, str] | None = None,
     ) -> dict[str, str]:
@@ -124,8 +124,10 @@ class CodebuffClient:
             "Accept-Encoding": CODEBUFF_ACCEPT_ENCODING,
             "Connection": "keep-alive",
             "Host": _host_header(self.settings.codebuff_api_url),
-            "User-Agent": user_agent,
         }
+        # 最小风控：默认不手动设置 User-Agent（httpx 默认），消除 CLI 运行时指纹
+        if user_agent:
+            headers["User-Agent"] = user_agent
         if require_auth:
             headers["Authorization"] = f"Bearer {self.settings.codebuff_token}"
         if json_body:
@@ -225,10 +227,18 @@ class CodebuffClient:
 
     async def create_session(self, model: str) -> FreebuffSession:
         logger.info("create freebuff session requested model=%s", model)
+        # 最小风控：客户端预生成 instance-id（桌面版签名），服务端据此绑定会话，
+        # 避免旧版"服务端分配实例"特征被 detectForeignFreebuffClient 标记。
+        instance_id = str(uuid.uuid4())
         data = await self._json(
             "POST",
             "/api/v1/freebuff/session",
-            headers=self._headers(extra={"x-freebuff-model": model}),
+            headers=self._headers(
+                extra={
+                    "x-freebuff-model": model,
+                    "x-freebuff-instance-id": instance_id,
+                }
+            ),
         )
         if data.get("status") == "queued":
             return await self._wait_for_active_session(data, model)
@@ -325,10 +335,7 @@ class CodebuffClient:
             "POST",
             "/api/v1/ads",
             body=body,
-            headers=self._headers(
-                json_body=True,
-                user_agent=FREEBUFF_CLI_USER_AGENT,
-            ),
+            headers=self._headers(json_body=True),
         )
 
     async def request_ad_chain(
@@ -379,7 +386,6 @@ class CodebuffClient:
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "*/*",
-                    "User-Agent": CODEBUFF_JSON_USER_AGENT,
                 },
             )
         except httpx.RequestError as error:
@@ -404,10 +410,7 @@ class CodebuffClient:
             "POST",
             "/api/v1/ads/impression",
             body={"impUrl": imp_url, "mode": "LITE"},
-            headers=self._headers(
-                json_body=True,
-                user_agent=FREEBUFF_CLI_USER_AGENT,
-            ),
+            headers=self._headers(json_body=True),
         )
 
     async def start_run(
@@ -481,9 +484,18 @@ class CodebuffClient:
 
     async def chat_events(self, payload: dict[str, Any]) -> AsyncIterator[str]:
         url = f"{self.settings.codebuff_api_url}/api/v1/chat/completions"
+        extra: dict[str, str] = {}
+        # 最小风控：chat 请求头带 x-freebuff-instance-id（桌面版签名），
+        # 缺省会落入旧 CLI 会话特征。
+        instance_id = (payload.get("codebuff_metadata") or {}).get(
+            "freebuff_instance_id"
+        )
+        if instance_id:
+            extra["x-freebuff-instance-id"] = str(instance_id)
         request_headers = self._headers(
             json_body=True,
             user_agent=CHAT_COMPLETIONS_USER_AGENT,
+            extra=extra,
         )
         try:
             async with (await self._ensure_client()).stream(
@@ -1118,6 +1130,13 @@ def _upstream_error(
         return CodebuffError(
             f"{prefix}: {response.status_code} {text}",
             429,
+        )
+    # 428 waiting_room_required：缓存 session 已失效（僵尸实例）。保留状态码供上层
+    # 清缓存重建（对齐 Worker 1.7.0 stale-session 处理），不要降级成 502。
+    if response.status_code == 428:
+        return CodebuffError(
+            f"{prefix}: {response.status_code} {text}",
+            428,
         )
     if response.status_code == 409:
         try:
