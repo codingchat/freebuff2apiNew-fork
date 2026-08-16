@@ -1,12 +1,12 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 from freebuff2api.app import app
 from freebuff2api.app import _error_response, _finalize_run_with_client
-from freebuff2api.codebuff import CodebuffError, FreebuffRun
+from freebuff2api.codebuff import CodebuffAccountPool, CodebuffError, FreebuffRun
 from freebuff2api.config import Settings
 
 
@@ -53,6 +53,59 @@ class AppErrorTests(unittest.TestCase):
         self.assertIn("network error", body["error"]["message"])
         self.assertEqual(body["error"]["upstream_message"], "network error")
         self.assertEqual(body["error"]["type"], "upstream_error")
+
+    def test_chat_completions_rejects_oversized_body(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "FREEBUFF_API_KEY": "local-key",
+                "FREEBUFF_TOKEN": "token",
+                "FREEBUFF_MAX_REQUEST_BODY_BYTES": "1000",
+            },
+            clear=True,
+        ), patch.object(
+            CodebuffAccountPool, "validate_accounts", new_callable=AsyncMock
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "deepseek/deepseek-v4-flash",
+                        "messages": [{"role": "user", "content": "x" * 5000}],
+                    },
+                    headers={"Authorization": "Bearer local-key"},
+                )
+
+        self.assertEqual(response.status_code, 413)
+        body = response.json()
+        self.assertEqual(body["error"]["code"], "request_body_too_large")
+        self.assertIn("请求体过大", body["error"]["message"])
+
+    def test_anthropic_messages_rejects_oversized_body(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "FREEBUFF_API_KEY": "local-key",
+                "FREEBUFF_TOKEN": "token",
+                "FREEBUFF_MAX_REQUEST_BODY_BYTES": "1000",
+            },
+            clear=True,
+        ), patch.object(
+            CodebuffAccountPool, "validate_accounts", new_callable=AsyncMock
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/messages",
+                    json={
+                        "model": "deepseek/deepseek-v4-flash",
+                        "max_tokens": 100,
+                        "messages": [{"role": "user", "content": "x" * 5000}],
+                    },
+                    headers={"Authorization": "Bearer local-key"},
+                )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("Request body too large", response.json()["error"]["message"])
 
     def test_finalize_skips_management_calls_and_does_not_raise(self) -> None:
         client = FinalizeFailingClient()

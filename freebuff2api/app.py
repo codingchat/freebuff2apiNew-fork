@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import datetime
+import json
 import logging
 import time
 from typing import Any, AsyncIterator
@@ -340,8 +341,36 @@ async def get_model(request: Request, model_id: str) -> dict[str, Any]:
 async def chat_completions(request: Request) -> Any:
     api_key = _check_local_auth(request, require_configured=True)
     _check_freebuff_token(request)
-    body = await request.json()
     settings = _settings(request)
+    raw_body = await request.body()
+    if len(raw_body) > settings.max_request_body_bytes:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": {
+                    "message": (
+                        f"Request body too large / 请求体过大：当前 {len(raw_body)} bytes，"
+                        f"超过限制 {settings.max_request_body_bytes} bytes。请减小上下文/附件大小，"
+                        "或在客户端启用上下文压缩。"
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "request_body_too_large",
+                }
+            },
+        )
+    try:
+        body = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "Invalid JSON body.",
+                    "type": "invalid_request_error",
+                    "code": "invalid_json",
+                }
+            },
+        )
     try:
         model_config = resolve_model(body.get("model"))
     except ValueError as error:
@@ -809,8 +838,30 @@ async def _finalize_run_with_client(
 async def anthropic_messages(request: Request) -> Any:
     api_key = _check_anthropic_auth(request, require_configured=True)
     _check_freebuff_token(request)
-    body = await request.json()
     settings = _settings(request)
+    raw_body = await request.body()
+    if len(raw_body) > settings.max_request_body_bytes:
+        return JSONResponse(
+            status_code=413,
+            content=anthropic_error_payload(
+                f"Request body too large / 请求体过大：当前 {len(raw_body)} bytes，"
+                f"超过限制 {settings.max_request_body_bytes} bytes。请减小上下文/附件大小，"
+                "或在客户端启用上下文压缩。",
+                error_type="invalid_request_error",
+                status_code=413,
+            ),
+        )
+    try:
+        body = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse(
+            status_code=400,
+            content=anthropic_error_payload(
+                "Invalid JSON body.",
+                error_type="invalid_request_error",
+                status_code=400,
+            ),
+        )
 
     # Validate required fields — return Anthropic-compatible errors.
     if not isinstance(body.get("messages"), list):

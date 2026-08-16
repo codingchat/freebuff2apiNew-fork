@@ -175,6 +175,7 @@ class Settings:
     max_request_records: int = 5000
     max_concurrency_per_account: int = 2  # premium 1 + unlimited 1 两条通道
     rotation_mode: str = "balanced"  # throughput | balanced | conservative
+    max_request_body_bytes: int = 307_200  # 300 KB：过大请求直接 413，避免打崩上游
 
     @property
     def codebuff_api_url(self) -> str:
@@ -281,6 +282,7 @@ def load_settings() -> Settings:
         max_request_records=_int("FREEBUFF_MAX_REQUEST_RECORDS", 5000),
         max_concurrency_per_account=_int("FREEBUFF_ACCOUNT_CONCURRENCY", 2),
         rotation_mode=os.getenv("FREEBUFF_ROTATION_MODE", "balanced"),
+        max_request_body_bytes=_int("FREEBUFF_MAX_REQUEST_BODY_BYTES", 307_200),
     )
 
 
