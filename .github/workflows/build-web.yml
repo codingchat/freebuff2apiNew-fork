@@ -1,0 +1,38 @@
+name: Build Web Assets
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install and build frontend
+        run: |
+          cd web
+          npm install
+          npm run build
+
+      - name: Commit built admin_static
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add freebuff2api/admin_static
+          if git diff --cached --quiet; then
+            echo "no changes to admin_static"
+          else
+            git commit -m "build(web): rebuild admin static [skip ci]"
+            git push
+          fi
