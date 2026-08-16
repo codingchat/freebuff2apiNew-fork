@@ -19,6 +19,7 @@ import type {
   GeoRefreshResult,
   ModelRegistryStatus,
   ModelRegistryRefreshResult,
+  RotationModeData,
 } from "@/types"
 
 const API_BASE = "/admin/api"
@@ -149,6 +150,16 @@ export const api = {
     request<TokenVerifyResult>("/freebuff-tokens/verify", {
       method: "POST",
       body: JSON.stringify({ token }),
+    }),
+
+  // Rotation mode
+  getRotationMode: () =>
+    request<RotationModeData>("/rotation-mode"),
+
+  setRotationMode: (mode: string) =>
+    request<RotationModeData>("/rotation-mode", {
+      method: "POST",
+      body: JSON.stringify({ mode }),
     }),
 
   // Account rotation / health

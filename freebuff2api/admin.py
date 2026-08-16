@@ -497,6 +497,35 @@ async def geo_refresh(request: Request) -> dict[str, Any]:
 # ── 动态模型注册表 ─────────────────────────────────────────────────────
 
 
+# ── 账号轮换模式 ─────────────────────────────────────────────────
+@router.get("/admin/api/rotation-mode")
+async def rotation_mode_status(request: Request) -> dict[str, Any]:
+    """Current rotation mode + available options."""
+    _check_admin_auth(request)
+    accounts: CodebuffAccountPool = request.app.state.accounts
+    return _api_ok({
+        "mode": accounts.rotation_mode,
+        "premium_banned_until": accounts._premium_banned_until,
+        "options": [
+            {"value": "throughput", "label": "并发", "desc": "所有账号同时扇出，吞吐最大，风险最高"},
+            {"value": "balanced", "label": "半并发", "desc": "free 扇出，premium 同时只用 1 个账号轮换"},
+            {"value": "conservative", "label": "串行", "desc": "free 也只用第 1 个账号，premium 轮换，风险最低"},
+        ],
+    })
+
+@router.post("/admin/api/rotation-mode")
+async def rotation_mode_switch(request: Request) -> dict[str, Any]:
+    """Switch rotation mode at runtime."""
+    _check_admin_auth(request)
+    body = await request.json()
+    mode = body.get("mode", "")
+    if mode not in {"throughput", "balanced", "conservative"}:
+        raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}")
+    accounts: CodebuffAccountPool = request.app.state.accounts
+    accounts.rotation_mode = mode
+    logger.info("rotation mode switched to %s", mode)
+    return _api_ok({"mode": mode, "message": f"Rotation mode switched to {mode}"})
+
 @router.get("/admin/api/model-registry")
 async def model_registry_status(request: Request) -> dict[str, Any]:
     """Dynamic model registry status (official source mirror)."""

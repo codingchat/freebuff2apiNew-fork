@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react"
+import type { RotationModeData } from "@/types"
 import { api } from "@/lib/api-client"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -40,6 +41,61 @@ function formatSeconds(sec: number): string {
   const m = Math.floor(total / 60)
   const s = total % 60
   return m > 0 ? `${m}分${s}秒` : `${s}秒`
+}
+
+function RotationModeCard() {
+  const [modeData, setModeData] = useState<RotationModeData | null>(null)
+  const [switching, setSwitching] = useState(false)
+
+  const fetchMode = useCallback(async () => {
+    try { setModeData(await api.getRotationMode()) } catch {}
+  }, [])
+
+  useEffect(() => { fetchMode() }, [fetchMode])
+
+  const switchMode = useCallback(async (mode: string) => {
+    setSwitching(true)
+    try { setModeData(await api.setRotationMode(mode)) } catch {}
+    setSwitching(false)
+  }, [])
+
+  const options = modeData?.options ?? []
+  const current = modeData?.mode ?? ""
+
+  return (
+    <Card className="border-border/60 shadow-sm">
+      <CardContent className="flex flex-col gap-3 p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium">账号轮换模式</span>
+          {modeData?.premium_banned_until ? (
+            <Badge variant="destructive" className="text-xs">
+              premium 已停用 · {new Date(modeData.premium_banned_until * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 恢复
+            </Badge>
+          ) : null}
+        </div>
+        <div className="flex gap-2">
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              disabled={switching}
+              onClick={() => switchMode(opt.value)}
+              className={`flex-1 rounded-lg border px-3 py-2 text-center text-xs transition-colors ${
+                current === opt.value
+                  ? "border-primary/60 bg-primary/10 text-primary font-medium"
+                  : "border-border/60 hover:border-muted-foreground/30 text-muted-foreground"
+              }`}
+              title={opt.desc}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          {options.find((o) => o.value === current)?.desc || "选择轮换策略"}
+        </p>
+      </CardContent>
+    </Card>
+  )
 }
 
 export default function TokenPage() {
@@ -205,6 +261,8 @@ export default function TokenPage() {
           </Button>
         </div>
       </div>
+
+      <RotationModeCard />
 
       {rotation?.all_blocked && (
         <Alert variant="destructive">

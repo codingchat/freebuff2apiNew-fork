@@ -175,7 +175,7 @@ class Settings:
     api_keys_json: str | None = None
     max_request_records: int = 5000
     max_concurrency_per_account: int = 2  # premium 1 + unlimited 1 两条通道
-    rotation_mode: str = "balanced"  # throughput | balanced | conservative
+    rotation_mode: str = "conservative"  # throughput | balanced | conservative
     max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES  # 300 KB：过大请求直接 413
 
     @property
@@ -282,7 +282,7 @@ def load_settings() -> Settings:
         api_keys_json=os.getenv("FREEBUFF_API_KEYS"),
         max_request_records=_int("FREEBUFF_MAX_REQUEST_RECORDS", 5000),
         max_concurrency_per_account=_int("FREEBUFF_ACCOUNT_CONCURRENCY", 2),
-        rotation_mode=os.getenv("FREEBUFF_ROTATION_MODE", "balanced"),
+        rotation_mode=os.getenv("FREEBUFF_ROTATION_MODE", "conservative"),
         max_request_body_bytes=_int("FREEBUFF_MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_REQUEST_BODY_BYTES),
     )
 

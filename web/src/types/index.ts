@@ -77,6 +77,18 @@ export interface AccountStatus {
   last_429: Record<string, unknown>
 }
 
+export interface RotationModeData {
+  mode: string
+  premium_banned_until: number
+  options: RotationModeOption[]
+}
+
+export interface RotationModeOption {
+  value: string
+  label: string
+  desc: string
+}
+
 export interface RotationInfo {
   current_index: number
   total_rotations: number
