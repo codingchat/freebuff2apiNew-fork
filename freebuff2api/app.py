@@ -325,7 +325,11 @@ async def healthz(request: Request) -> dict[str, Any]:
 @app.get("/v1/models")
 async def list_models(request: Request) -> dict[str, Any]:
     _check_local_auth(request, require_configured=True)
-    return models_response()
+    response = models_response()
+    settings = _settings(request)
+    for item in response["data"]:
+        item["max_request_bytes"] = settings.max_request_body_bytes
+    return response
 
 
 @app.get("/v1/models/{model_id:path}")
@@ -334,6 +338,8 @@ async def get_model(request: Request, model_id: str) -> dict[str, Any]:
     result = model_response(model_id)
     if result is None:
         raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
+    settings = _settings(request)
+    result["max_request_bytes"] = settings.max_request_body_bytes
     return result
 
 

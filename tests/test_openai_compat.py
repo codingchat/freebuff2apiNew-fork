@@ -29,7 +29,6 @@ class OpenAICompatTests(unittest.TestCase):
         self.assertGreaterEqual(first["context_window"], 1)
         self.assertGreaterEqual(first["max_input_tokens"], 1)
         self.assertGreaterEqual(first["max_output_tokens"], 1)
-        self.assertGreaterEqual(first["max_request_bytes"], 1)
 
     def test_resolve_model_maps_agent_id(self) -> None:
         model = resolve_model("crof/kimi-k3-eco")

@@ -34,6 +34,23 @@ class AppErrorTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertIn("FREEBUFF_API_KEY", response.json()["detail"])
 
+    def test_v1_models_includes_max_request_bytes_from_settings(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"FREEBUFF_API_KEY": "local-key", "FREEBUFF_MAX_REQUEST_BODY_BYTES": "123456"},
+            clear=True,
+        ), patch.object(
+            CodebuffAccountPool, "validate_accounts", new_callable=AsyncMock
+        ):
+            with TestClient(app) as client:
+                response = client.get(
+                    "/v1/models",
+                    headers={"Authorization": "Bearer local-key"},
+                )
+        self.assertEqual(response.status_code, 200)
+        first = response.json()["data"][0]
+        self.assertEqual(first["max_request_bytes"], 123456)
+
     def test_v1_models_accepts_configured_api_key(self) -> None:
         with patch.dict("os.environ", {"FREEBUFF_API_KEY": "local-key"}, clear=True):
             with TestClient(app) as client:
