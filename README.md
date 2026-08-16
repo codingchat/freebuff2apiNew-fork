@@ -156,7 +156,7 @@ FREEBUFF_ROTATION_MODE=balanced
 
 # 📦 请求体大小上限（可选，默认 307200 = 300KB）
 # 超过该大小直接 413，避免把上游打崩
-FREEBUFF_MAX_REQUEST_BODY_BYTES=307200
+FREEBUFF_MAX_REQUEST_BODY_BYTES=2097152
 ```
 
 > 💡 当前轮询账号由系统自动写入 `.env` 的 `CURRENT_TOKENNum`（无需手动配置），重启后从该账号继续轮换。
@@ -389,7 +389,7 @@ Content-Type: application/json
 | `FREEBUFF_MAX_REQUEST_RECORDS` | ❌ | `5000` | 请求记录内存保留上限 |
 | `FREEBUFF_ACCOUNT_CONCURRENCY` | ❌ | `2` | 每账号并发通道数（premium 1 + unlimited 1） |
 | `FREEBUFF_ROTATION_MODE` | ❌ | `balanced` | 账号轮换模式：`throughput` / `balanced` / `conservative` |
-| `FREEBUFF_MAX_REQUEST_BODY_BYTES` | ❌ | `307200` | 请求体大小上限（字节），超过返回 413 |
+| `FREEBUFF_MAX_REQUEST_BODY_BYTES` | ❌ | `2097152` | 请求体大小上限（字节，默认 2 MB），超过返回 413 |
 | `FREEBUFF_SESSION_ID` | ❌ | 随机 | 上游会话 ID（通常自动生成，无需设置） |
 | `FREEBUFF_SYSTEM_PROMPT_OVERRIDE` | ❌ | - | 覆盖注入的 Buffy 系统提示词（追加在真实 Buffy 提示词之后） |
 | `FREEBUFF_AD_PROVIDERS` | ❌ | `gravity,carbon` | 广告提供商顺序（逗号分隔；上游现已不接受 `zeroclick`） |
