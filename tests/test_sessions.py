@@ -28,8 +28,8 @@ class SwitchModelClient:
             "remainingMs": 3_000_000,
         }
 
-    async def delete_session(self) -> None:
-        self.calls.append(("delete_session",))
+    async def delete_session(self, instance_id=None) -> None:
+        self.calls.append(("delete_session", instance_id))
         self.deleted = True
 
     async def request_ad_chain(self, messages=None, *, surface=None) -> None:
@@ -77,8 +77,8 @@ class LeaseSwitchModelClient:
             "remainingMs": 3_000_000,
         }
 
-    async def delete_session(self) -> None:
-        self.calls.append(("delete_session", self.current_model))
+    async def delete_session(self, instance_id=None) -> None:
+        self.calls.append(("delete_session", instance_id, self.current_model))
         self.current_model = ""
 
     async def request_ad_chain(self, messages=None, *, surface=None) -> None:
@@ -142,14 +142,14 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             client.calls,
             [
                 ("get_session", None),
-                ("delete_session",),
+                ("delete_session", "deepseek-instance"),
                 ("request_ads", "gravity", [], "waiting_room"),
                 ("request_ads", "carbon", [], "waiting_room"),
                 ("create_session", "moonshotai/kimi-k2.6"),
             ],
         )
 
-    async def test_session_lease_blocks_model_switch_until_chat_releases(self):
+    async def test_premium_and_unlimited_channels_do_not_block_each_other(self):
         client = LeaseSwitchModelClient()
         manager = SessionManager(
             client,
@@ -165,24 +165,19 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
 
         task = asyncio.create_task(acquire_second())
         await started.wait()
-        await asyncio.sleep(0.05)
-
-        self.assertFalse(task.done())
-        self.assertNotIn(
-            ("delete_session", "deepseek/deepseek-v4-flash"),
-            client.calls,
-        )
-
-        await first.aclose()
         second = await asyncio.wait_for(task, timeout=1)
         try:
+            # premium 通道不会被 unlimited 通道阻塞；两个会话同时存在
+            self.assertEqual(first.session.model, "deepseek/deepseek-v4-flash")
             self.assertEqual(second.session.model, "moonshotai/kimi-k2.6")
-            self.assertIn(
-                ("delete_session", "deepseek/deepseek-v4-flash"),
+            # unlimited 通道的 session 没有被删除
+            self.assertNotIn(
+                ("delete_session", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"),
                 client.calls,
             )
         finally:
             await second.aclose()
+            await first.aclose()
 
     async def test_account_pool_uses_next_free_token_for_concurrent_requests(self):
         settings = Settings(

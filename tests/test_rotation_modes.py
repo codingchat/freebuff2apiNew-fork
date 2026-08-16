@@ -1,0 +1,92 @@
+"""Tests for FREEBUFF_ROTATION_MODE account selection."""
+from __future__ import annotations
+
+import asyncio
+import unittest
+
+from freebuff2api.codebuff import CodebuffAccountPool, CodebuffError
+from freebuff2api.config import Settings
+
+
+def _settings(accounts: str = "token-a,token-b", *, mode: str, concurrency: int = 2) -> Settings:
+    return Settings(
+        codebuff_token=accounts,
+        local_api_key=None,
+        rotation_mode=mode,
+        max_concurrency_per_account=concurrency,
+    )
+
+
+class RotationModeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_balanced_unlimited_fans_out_across_accounts(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+
+        first = pool._next_available_index("deepseek/deepseek-v4-flash")
+        await pool._reserve_account("deepseek/deepseek-v4-flash")
+        second = pool._next_available_index("deepseek/deepseek-v4-flash")
+
+        self.assertEqual(first, 0)
+        self.assertEqual(second, 1)
+        await pool.release(0, "deepseek/deepseek-v4-flash")
+        await pool.aclose()
+
+    async def test_balanced_premium_uses_only_one_account_at_a_time(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+        pool._premium_index = 0
+
+        first = await pool._reserve_account("deepseek/deepseek-v4-pro")
+        # 第一条 premium 通道被占用后，第二条不可选（即使还有第二个账号）
+        self.assertIsNone(pool._next_available_index("deepseek/deepseek-v4-pro"))
+
+        await pool.release(first, "deepseek/deepseek-v4-pro")
+        # 释放后仍优先使用原来的 premium 账号（串行轮换，不是并发）
+        self.assertEqual(pool._next_available_index("deepseek/deepseek-v4-pro"), first)
+        await pool.aclose()
+
+    async def test_balanced_premium_rotates_on_normal_429(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+        pool._premium_index = 0
+
+        self.assertEqual(pool._next_available_index("deepseek/deepseek-v4-pro"), 0)
+        pool.handle_error(
+            0,
+            'Codebuff request failed: 429 {"status":"rate_limited","retryAfterMs":21600000}',
+            status_code=429,
+            model="deepseek/deepseek-v4-pro",
+        )
+        # 正常额度用完 → 切到下一个账号
+        self.assertEqual(pool._next_available_index("deepseek/deepseek-v4-pro"), 1)
+        await pool.aclose()
+
+    async def test_balanced_premium_ban_disables_premium(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+
+        pool.handle_error(
+            0,
+            "Codebuff request failed: account banned - Freebuff account banned",
+            status_code=403,
+            model="deepseek/deepseek-v4-pro",
+        )
+        self.assertIsNone(pool._next_available_index("deepseek/deepseek-v4-pro"))
+
+        with self.assertRaises(CodebuffError) as ctx:
+            await pool.acquire_session("deepseek/deepseek-v4-pro")
+        self.assertEqual(ctx.exception.status_code, 403)
+        await pool.aclose()
+
+    async def test_conservative_unlimited_uses_only_first_account(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="conservative"))
+
+        first = pool._next_available_index("deepseek/deepseek-v4-flash")
+        self.assertEqual(first, 0)
+
+        await pool._reserve_account("deepseek/deepseek-v4-flash")
+        # 免费模型通道被占用后，不允许使用第二个账号
+        self.assertIsNone(pool._next_available_index("deepseek/deepseek-v4-flash"))
+        await pool.release(0, "deepseek/deepseek-v4-flash")
+        self.assertEqual(pool._next_available_index("deepseek/deepseek-v4-flash"), 0)
+        await pool.aclose()
+
+
+if __name__ == "__main__":
+    unittest.main()

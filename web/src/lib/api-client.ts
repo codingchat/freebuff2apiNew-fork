@@ -17,6 +17,8 @@ import type {
   ChatTestResult,
   GeoInfo,
   GeoRefreshResult,
+  ModelRegistryStatus,
+  ModelRegistryRefreshResult,
 } from "@/types"
 
 const API_BASE = "/admin/api"
@@ -103,6 +105,15 @@ export const api = {
 
   clearLogs: () =>
     request<unknown>("/logs", { method: "DELETE" }),
+
+  // Dynamic model registry
+  modelRegistry: () =>
+    request<ModelRegistryStatus>("/model-registry"),
+
+  refreshModelRegistry: () =>
+    request<ModelRegistryRefreshResult>("/model-registry/refresh", {
+      method: "POST",
+    }),
 
   // Network
   network: () => request<NetworkData>("/network"),

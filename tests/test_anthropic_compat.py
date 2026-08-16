@@ -16,7 +16,7 @@ from freebuff2api.anthropic_compat import (
     anthropic_tools_to_openai,
     build_anthropic_upstream_payload,
 )
-from freebuff2api.codebuff import FreebuffSession
+from freebuff2api.codebuff import CodebuffError, FreebuffSession
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -837,6 +837,54 @@ class AnthropicErrorTests(unittest.TestCase):
         # 64000 超模型上限 32768 → 钳制并映射为 max_completion_tokens
         self.assertEqual(payload["max_completion_tokens"], 32_768)
         self.assertNotIn("max_tokens", payload)
+
+
+    def test_reasoning_effort_clamps_to_official_model_table(self) -> None:
+        body = {
+            "model": "openai/gpt-5.6-luna",
+            "max_tokens": 100,
+            "reasoning_effort": "ultra",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        payload = build_anthropic_upstream_payload(
+            body,
+            session=_session(),
+            run_id="run-1",
+            client_id="client-1",
+        )
+
+        # luna official efforts: low/medium/high/xhigh/max；ultra 不对齐官方允许列表 → 回退默认 high，
+        # 且按官方 free-mode 传法放进 codebuff_metadata.freebuff_reasoning_effort
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(payload["codebuff_metadata"]["freebuff_reasoning_effort"], "high")
+
+    def test_accumulator_raises_on_upstream_error(self) -> None:
+        accumulator = AnthropicCompletionAccumulator("openai/gpt-5.6-luna")
+
+        with self.assertRaises(CodebuffError):
+            accumulator.add(
+                {
+                    "id": "chunk-1",
+                    "created": 1,
+                    "model": "openai/gpt-5.6-luna",
+                    "choices": [],
+                    "error": {"code": 502, "message": "blocked by policy"},
+                }
+            )
+
+    def test_stream_state_raises_on_upstream_error(self) -> None:
+        state = AnthropicStreamState(model="openai/gpt-5.6-luna")
+
+        with self.assertRaises(CodebuffError):
+            state.consume_chunk(
+                {
+                    "id": "chunk-1",
+                    "created": 1,
+                    "model": "openai/gpt-5.6-luna",
+                    "choices": [],
+                    "error": {"code": 502, "message": "blocked by policy"},
+                }
+            )
 
 
 if __name__ == "__main__":

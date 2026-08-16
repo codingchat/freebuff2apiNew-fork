@@ -100,6 +100,21 @@ export interface ModelAvailabilityRow {
   accounts: ModelAvailabilityAccount[]
 }
 
+export interface ModelRegistryStatus {
+  loaded: boolean
+  model_count: number
+  fetched_at: number | null
+  last_error: string | null
+  refresh_interval_seconds: number
+}
+
+export interface ModelRegistryRefreshResult {
+  loaded: boolean
+  model_count: number
+  fetched_at: number | null
+  message: string
+}
+
 export interface OverviewData {
   status: string
   environment: string
@@ -109,6 +124,7 @@ export interface OverviewData {
   debug: boolean
   log_level: string
   model_availability: ModelAvailabilityRow[]
+  model_registry: ModelRegistryStatus
 }
 
 export interface EnvData {

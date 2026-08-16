@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -13,14 +14,16 @@ import httpx
 
 from .config import HAR_BROWSER_USER_AGENT, Settings, project_env_path
 from .logging_config import redact_headers, render_debug
-from .models import agent_validation_payload
+from .models import agent_validation_payload, session_bucket_for_model
 from .token_rotation import (
     STATUS_ACTIVE,
     STATUS_BLOCKED,
     STATUS_CHECKING,
     STATUS_INVALID,
     RotationState,
+    is_ban_error,
     is_rate_limit_error,
+    next_beijing_1500_epoch,
     parse_429_info,
 )
 
@@ -35,6 +38,24 @@ CODEBUFF_ACCEPT_ENCODING = "gzip, deflate"
 # - JSON 请求不再手动设置 User-Agent（httpx 默认），消除 CLI 运行时特征
 # - chat 请求使用官方 SDK 版本号签名（桌面版同款）
 CHAT_COMPLETIONS_USER_AGENT = "ai-sdk/openai-compatible/3.0.20/codebuff"
+
+# 广告/streak 链节流（对齐 worker.js runNormalClientBehavior：每账号 30 分钟一次）。
+AD_CHAIN_THROTTLE_SECONDS = 30 * 60
+_ad_chain_last_at: dict[str, float] = {}
+
+
+def _ad_chain_due(token: str) -> bool:
+    """返回 True 表示本次请求需要执行广告链，否则跳过（30 分钟节流）。
+
+    module-level dict 足够：token 数量少，异步并发时最坏情况是多执行一次广告链，
+    与官方客户端的节流语义一致且无害。
+    """
+    now = time.monotonic()
+    last = _ad_chain_last_at.get(token)
+    if last is not None and now - last < AD_CHAIN_THROTTLE_SECONDS:
+        return False
+    _ad_chain_last_at[token] = now
+    return True
 
 
 class CodebuffError(RuntimeError):
@@ -218,7 +239,12 @@ class CodebuffClient:
         )
 
     async def get_session(self, instance_id: str | None = None) -> dict[str, Any]:
-        headers_extra = {"x-freebuff-include-unused-rate-limits": "1"}
+        # 对齐 Freebuff Desktop 0.0.62：GET session 带 multi-session + 额度快照头；
+        # 查询指定实例时额外带 instance-id。
+        headers_extra = {
+            "x-freebuff-include-unused-rate-limits": "1",
+            "x-freebuff-multi-session": "1",
+        }
         if instance_id:
             headers_extra["x-freebuff-instance-id"] = instance_id
         return await self._json(
@@ -239,6 +265,7 @@ class CodebuffClient:
                 extra={
                     "x-freebuff-model": model,
                     "x-freebuff-instance-id": instance_id,
+                    "x-freebuff-multi-session": "1",
                 }
             ),
         )
@@ -252,15 +279,31 @@ class CodebuffClient:
         model: str,
         instance_id: str | None = None,
     ) -> FreebuffSession:
-        resolved_instance_id = data.get("instanceId") or instance_id
-        if data.get("status") != "active" or not resolved_instance_id:
-            raise CodebuffError(f"Freebuff session is not active: {data}", 502)
-        return FreebuffSession(
-            instance_id=resolved_instance_id,
-            model=data.get("model") or model,
-            expires_at=data.get("expiresAt"),
-            remaining_ms=data.get("remainingMs"),
-        )
+        status = data.get("status")
+        if status == "active":
+            resolved_instance_id = data.get("instanceId") or instance_id
+            if not resolved_instance_id:
+                raise CodebuffError(f"Freebuff session is not active: {data}", 502)
+            return FreebuffSession(
+                instance_id=resolved_instance_id,
+                model=data.get("model") or model,
+                expires_at=data.get("expiresAt"),
+                remaining_ms=data.get("remainingMs"),
+            )
+        if status == "banned":
+            raise CodebuffError(f"Freebuff account banned: {data}", 403)
+        if status == "country_blocked":
+            raise CodebuffError(f"Freebuff country_blocked: {data}", 403)
+        if status == "rate_limited":
+            raise CodebuffError(
+                f"Freebuff session rate_limited: 429 {json.dumps(data, ensure_ascii=False)}",
+                429,
+            )
+        if status == "premium_slot_taken":
+            raise CodebuffError(f"Freebuff premium_slot_taken: {data}", 409)
+        if status == "session_limit_reached":
+            raise CodebuffError(f"Freebuff session_limit_reached: {data}", 409)
+        raise CodebuffError(f"Freebuff session is not active: {data}", 502)
 
     async def _wait_for_active_session(
         self,
@@ -294,7 +337,7 @@ class CodebuffClient:
         return self._session_from_data(data, model, instance_id=instance_id)
 
     async def delete_session(self, instance_id: str | None = None) -> None:
-        extra = {}
+        extra = {"x-freebuff-multi-session": "1"}
         if instance_id:
             extra["x-freebuff-instance-id"] = instance_id
         await self._json(
@@ -349,6 +392,9 @@ class CodebuffClient:
         *,
         surface: str | None = None,
     ) -> None:
+        if not _ad_chain_due(_ad_chain_key(self)):
+            logger.info("ad chain throttled (30 min window) token=%s", _token_prefix(_client_token(self)))
+            return
         for provider in self.settings.ad_providers:
             try:
                 ads_data = await self.request_ads(
@@ -489,18 +535,12 @@ class CodebuffClient:
 
     async def chat_events(self, payload: dict[str, Any]) -> AsyncIterator[str]:
         url = f"{self.settings.codebuff_api_url}/api/v1/chat/completions"
-        extra: dict[str, str] = {}
-        # 桌面版签名（对齐 Worker 1.7.0）：chat 请求头带 x-freebuff-instance-id，
-        # 上游据此识别桌面端实例；缺省会落入旧 CLI 会话特征。
-        instance_id = (payload.get("codebuff_metadata") or {}).get(
-            "freebuff_instance_id"
-        )
-        if instance_id:
-            extra["x-freebuff-instance-id"] = str(instance_id)
+        # 对齐 Freebuff Desktop 0.0.62：chat 请求头不再额外携带 x-freebuff-instance-id。
+        # 官方桌面端只把 freebuff_instance_id 放进 codebuff_metadata body；
+        # 旧版额外头是 1.7 时期的逆向结论，最新 orchestrator.js 中 chat headers 不含该头。
         request_headers = self._headers(
             json_body=True,
             user_agent=CHAT_COMPLETIONS_USER_AGENT,
-            extra=extra,
         )
         try:
             async with (await self._ensure_client()).stream(
@@ -558,18 +598,35 @@ class CodebuffClient:
 
 
 class SessionManager:
+    """每个账号维护两条串行通道：premium 1 + unlimited 1。
+
+    与官方桌面端一致：premium 和 unlimited 会话互相独立、可同时存在；
+    同一条通道内的请求串行复用同一个上游 session，不会因为下游多开会话而
+    挤掉正在响应的另一条通道。
+    """
+
     def __init__(self, client: CodebuffClient, settings: Settings) -> None:
         self.client = client
         self.settings = settings
         self._sessions: dict[str, FreebuffSession] = {}
-        self._lock = asyncio.Lock()
+        self._locks = {
+            "premium": asyncio.Lock(),
+            "unlimited": asyncio.Lock(),
+        }
+
+    @staticmethod
+    def _bucket(model: str) -> str:
+        return session_bucket_for_model(model)
+
+    def _lock_for(self, model: str) -> asyncio.Lock:
+        return self._locks[self._bucket(model)]
 
     async def ensure_session(
         self,
         model: str,
         messages: list[dict[str, Any]] | None = None,
     ) -> FreebuffSession:
-        async with self._lock:
+        async with self._lock_for(model):
             return await self._ensure_session_locked(model, messages)
 
     async def acquire_session(
@@ -577,13 +634,14 @@ class SessionManager:
         model: str,
         messages: list[dict[str, Any]] | None = None,
     ) -> FreebuffSessionLease:
-        await self._lock.acquire()
+        lock = self._lock_for(model)
+        await lock.acquire()
         try:
             session = await self._ensure_session_locked(model, messages)
         except Exception:
-            self._lock.release()
+            lock.release()
             raise
-        return FreebuffSessionLease(session=session, _lock=self._lock)
+        return FreebuffSessionLease(session=session, _lock=lock)
 
     async def _ensure_session_locked(
         self,
@@ -625,19 +683,24 @@ class SessionManager:
         active_session = await self._delete_locked_session(model)
         if active_session:
             return active_session
+        # 同 bucket 只保留一个 session：清理本地缓存中的其他同 bucket 会话。
+        # 当前请求持有该 bucket 的通道锁，因此这些会话不可能还在被其他请求使用。
+        await self._delete_same_bucket_sessions(model, force=True)
         await self._request_ads_and_streak(surface="waiting_room")
+        return await self._create_session_locked(model)
 
+    async def _create_session_locked(self, model: str) -> FreebuffSession:
+        """创建并缓存 session。调用方必须已持有该 bucket 的通道锁。"""
         try:
             session = await self.client.create_session(model)
         except CodebuffError as error:
             if "model_locked" not in str(error):
                 raise
             logger.info(
-                "freebuff session locked during create; delete and retry model=%s",
+                "freebuff session locked during create; delete same-bucket session and retry model=%s",
                 model,
             )
-            await self.client.delete_session()
-            self._sessions.clear()
+            await self._delete_same_bucket_sessions(model, force=True)
             await self._request_ads_and_streak(surface="waiting_room")
             session = await self.client.create_session(model)
         self._sessions[model] = session
@@ -655,6 +718,9 @@ class SessionManager:
         *,
         surface: str | None = None,
     ) -> None:
+        if not _ad_chain_due(_ad_chain_key(self.client)):
+            logger.info("session ad chain throttled (30 min window) token=%s", _token_prefix(_client_token(self.client)))
+            return
         for provider in self.settings.ad_providers:
             try:
                 ads_data = await self.client.request_ads(
@@ -691,6 +757,12 @@ class SessionManager:
         self,
         requested_model: str,
     ) -> FreebuffSession | None:
+        """发现并复用/清理服务端当前活跃 session（仅限同 bucket）。
+
+        桌面端 multi-session 下，premium 与 unlimited 通道互不影响，因此这里
+        只处理与 requested_model 相同 bucket 的活跃 session；不同 bucket 的
+        session 绝不删除。
+        """
         try:
             data = await self.client.get_session()
         except CodebuffError:
@@ -724,15 +796,60 @@ class SessionManager:
         if not current_model or current_model == requested_model:
             return None
 
+        if self._bucket(current_model) != self._bucket(requested_model):
+            logger.info(
+                "keep other-bucket freebuff session current_model=%s requested_model=%s",
+                current_model,
+                requested_model,
+            )
+            return None
+
         logger.info(
-            "switch freebuff session current_model=%s requested_model=%s instance_id=%s",
+            "switch same-bucket freebuff session current_model=%s requested_model=%s instance_id=%s",
             current_model,
             requested_model,
             instance_id,
         )
-        await self.client.delete_session()
-        self._sessions.clear()
+        await self.client.delete_session(instance_id)
+        self._clear_bucket_sessions(requested_model)
         return None
+
+    async def _delete_same_bucket_sessions(
+        self,
+        requested_model: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        bucket = self._bucket(requested_model)
+        stale_models = [
+            model
+            for model in self._sessions
+            if model != requested_model and self._bucket(model) == bucket
+        ]
+        for old_model in stale_models:
+            old_session = self._sessions.pop(old_model, None)
+            if old_session is None:
+                continue
+            if force:
+                try:
+                    await self.client.delete_session(old_session.instance_id)
+                except CodebuffError as error:
+                    logger.debug(
+                        "delete stale freebuff session model=%s failed: %s",
+                        old_model,
+                        error,
+                    )
+
+    def discard_session(self, model: str) -> None:
+        self._sessions.pop(model, None)
+
+    def clear_bucket_sessions(self, model: str) -> None:
+        self._clear_bucket_sessions(model)
+
+    def _clear_bucket_sessions(self, model: str) -> None:
+        bucket = self._bucket(model)
+        for key in [m for m in self._sessions if self._bucket(m) == bucket]:
+            self._sessions.pop(key, None)
 
 
 @dataclass
@@ -741,6 +858,8 @@ class CodebuffAccount:
     sessions: SessionManager
     busy: bool = False
     active_requests: int = 0
+    premium_active_requests: int = 0
+    unlimited_active_requests: int = 0
 
     @property
     def is_busy(self) -> bool:
@@ -761,7 +880,7 @@ class CodebuffAccountLease:
             return
         self._closed = True
         await self._session_lease.aclose()
-        await self._pool.release(self._account_index)
+        await self._pool.release(self._account_index, self.session.model)
 
 
 class CodebuffAccountPool:
@@ -781,6 +900,9 @@ class CodebuffAccountPool:
         self._condition = asyncio.Condition()
         self._rotation = rotation or RotationState(len(self._accounts), project_env_path())
         self._max_concurrency = max(1, getattr(settings, "max_concurrency_per_account", 1))
+        self.rotation_mode = getattr(settings, "rotation_mode", "balanced")
+        self._premium_index = self._rotation.current_index if self._accounts else 0
+        self._premium_banned_until = 0.0
         self._last_used: dict[int, float] = {}
         self._probe_tasks: set[asyncio.Task] = set()
 
@@ -816,6 +938,16 @@ class CodebuffAccountPool:
         model: str,
         messages: list[dict[str, Any]] | None = None,
     ) -> CodebuffAccountLease:
+        bucket = session_bucket_for_model(model) if model else "premium"
+        if (
+            bucket == "premium"
+            and self.rotation_mode in {"balanced", "conservative"}
+            and time.time() < self._premium_banned_until
+        ):
+            raise CodebuffError(
+                "Freebuff premium/limited models are disabled until the next 15:00 Asia/Shanghai because an account was banned.",
+                403,
+            )
         last_error: Exception | None = None
         for _ in range(2):
             account_index = await self._reserve_account(model)
@@ -829,7 +961,7 @@ class CodebuffAccountPool:
             try:
                 session_lease = await account.sessions.acquire_session(model, messages)
             except CodebuffError as error:
-                await self.release(account_index)
+                await self.release(account_index, model)
                 if error.status_code == 429 or is_rate_limit_error(str(error)):
                     raise
                 last_error = error
@@ -847,7 +979,7 @@ class CodebuffAccountPool:
                     account_index + 1,
                     model,
                 )
-                await self.release(account_index)
+                await self.release(account_index, model)
                 raise
             # Success: reset the transient-failure counter (optimization ②)
             if self._rotation is not None:
@@ -869,10 +1001,14 @@ class CodebuffAccountPool:
             )
         raise last_error if last_error else CodebuffError("no account available")
 
-    async def release(self, account_index: int) -> None:
+    async def release(self, account_index: int, model: str = "") -> None:
         async with self._condition:
             account = self._accounts[account_index]
             account.active_requests = max(0, account.active_requests - 1)
+            if session_bucket_for_model(model) == "premium":
+                account.premium_active_requests = max(0, account.premium_active_requests - 1)
+            elif model:
+                account.unlimited_active_requests = max(0, account.unlimited_active_requests - 1)
             account.busy = account.active_requests > 0
             self._condition.notify(1)
 
@@ -882,7 +1018,14 @@ class CodebuffAccountPool:
                 account_index = self._next_available_index(model)
                 if account_index is not None:
                     account = self._accounts[account_index]
+                    bucket = session_bucket_for_model(model) if model else "premium"
                     account.active_requests += 1
+                    if bucket == "premium":
+                        account.premium_active_requests += 1
+                        if self.rotation_mode in {"balanced", "conservative"}:
+                            self._premium_index = account_index
+                    elif model:
+                        account.unlimited_active_requests += 1
                     account.busy = True
                     self._next_index = (account_index + 1) % len(self._accounts)
                     return account_index
@@ -907,16 +1050,79 @@ class CodebuffAccountPool:
                     pass
 
     def _next_available_index(self, model: str = "") -> int | None:
-        """Round-robin: scan from _next_index (true rotation), skipping busy/
-        over-concurrency / blocked(for model) / invalid accounts."""
+        """Select the next usable account according to the configured rotation mode.
+
+        Modes:
+        - ``throughput``: round-robin across all accounts; premium/unlimited can
+          both fan out (original behavior, highest throughput, highest risk).
+        - ``balanced``: unlimited fan out across all accounts; premium uses only
+          one account at a time (sequential failover on normal quota).
+        - ``conservative``: unlimited uses only account 1; premium sequential
+          failover like balanced. If any account is banned, premium is disabled
+          until the next 15:00 Asia/Shanghai.
+        """
         account_count = len(self._accounts)
         if account_count == 0:
             return None
+        bucket = session_bucket_for_model(model) if model else "premium"
+
+        # Banned premium gate（balanced/conservative 模式）：被 ban 后限制模型全部停用，
+        # 直到下一个北京时间 15 点。throughput 模式保持原行为。
+        if (
+            bucket == "premium"
+            and self.rotation_mode in {"balanced", "conservative"}
+            and time.time() < self._premium_banned_until
+        ):
+            return None
+
+        if bucket == "premium" and self.rotation_mode in {"balanced", "conservative"}:
+            # 限制模型：全局只允许 1 条 premium 通道，从 premium_index 开始选一个账号。
+            premium_active = sum(
+                account.premium_active_requests for account in self._accounts
+            )
+            if premium_active >= 1:
+                return None
+            start = self._premium_index % account_count
+            for offset in range(account_count):
+                account_index = (start + offset) % account_count
+                account = self._accounts[account_index]
+                if account.active_requests >= self._max_concurrency:
+                    continue
+                if account.premium_active_requests >= 1:
+                    continue
+                if self._rotation and (
+                    self._rotation.is_blocked(account_index, model)
+                    or self._rotation.status_of(account_index) == STATUS_INVALID
+                ):
+                    continue
+                return account_index
+            return None
+
+        if bucket == "unlimited" and self.rotation_mode == "conservative":
+            # 最保守模式：免费模型也只用第一个账号。
+            account_index = 0
+            account = self._accounts[account_index]
+            if account.active_requests >= self._max_concurrency:
+                return None
+            if account.unlimited_active_requests >= 1:
+                return None
+            if self._rotation and (
+                self._rotation.is_blocked(account_index, model)
+                or self._rotation.status_of(account_index) == STATUS_INVALID
+            ):
+                return None
+            return account_index
+
+        # throughput / balanced 的 unlimited：round-robin 扇出。
         start = self._next_index % account_count
         for offset in range(account_count):
             account_index = (start + offset) % account_count
             account = self._accounts[account_index]
             if account.active_requests >= self._max_concurrency:
+                continue
+            if bucket == "premium" and account.premium_active_requests >= 1:
+                continue
+            if bucket == "unlimited" and account.unlimited_active_requests >= 1:
                 continue
             if self._rotation and (
                 self._rotation.is_blocked(account_index, model)
@@ -1009,17 +1215,52 @@ class CodebuffAccountPool:
         return rows
 
     def handle_error(self, index: int, message: str, status_code: int = 502, model: str = "") -> None:
-        """Record an upstream error against an account. 429 → cooldown (per model)
-        + rotate; transient (5xx/network) → failure counter; 409 etc. → untouched."""
+        """Record an upstream error against an account.
+
+        - Ban (403 / banned / country_blocked / policy violation): mark the account
+          invalid; in balanced/conservative mode disable premium for everyone until
+          the next 15:00 Asia/Shanghai.
+        - Normal 429 rate limit: cool down the account/model, rotate to the next
+          usable account; in balanced/conservative premium mode this is the normal
+          "6 小时额度用完，换下一个账号" failover.
+        - Transient 5xx/network: failure counter.
+        """
         if self._rotation is None:
             return
+        bucket = session_bucket_for_model(model) if model else "premium"
+
+        if status_code == 403 or is_ban_error(message):
+            self._rotation.mark_invalid(index)
+            logger.warning(
+                "account %s banned/blocked; marking invalid message=%s",
+                index + 1,
+                message[:300],
+            )
+            if self.rotation_mode in {"balanced", "conservative"} and bucket == "premium":
+                self._premium_banned_until = next_beijing_1500_epoch()
+                logger.warning(
+                    "premium disabled until next 15:00 Asia/Shanghai (%s)",
+                    self._premium_banned_until,
+                )
+            return
+
         if status_code == 429 or is_rate_limit_error(message):
-            self._rotation.rotate(
+            _, status = self._rotation.rotate(
                 reason="429",
                 error_message=message,
                 is_429=True,
                 failed_index=index,
                 model=model,
+            )
+            # balanced/conservative 模式：premium 指针跟随 rotation（正常额度轮换）
+            if self.rotation_mode in {"balanced", "conservative"} and bucket == "premium":
+                self._premium_index = self._rotation.current_index
+            logger.info(
+                "account %s rate limited (normal quota), rotated to %s status=%s model=%s",
+                index + 1,
+                self._rotation.current_index + 1,
+                status,
+                model,
             )
         elif status_code in (502, 500):
             self._rotation.record_failure(index)
@@ -1030,6 +1271,7 @@ class CodebuffAccountPool:
         index, _ = self._rotation.rotate(reason="manual")
         if self._accounts:
             self._next_index = index
+            self._premium_index = index
         return index
 
     def set_active(self, index: int) -> None:
@@ -1040,6 +1282,7 @@ class CodebuffAccountPool:
             raise IndexError(f"account index out of range: {index}")
         self._rotation.set_active(index - 1)
         self._next_index = index - 1
+        self._premium_index = index - 1
 
     async def validate_accounts(self) -> None:
         """Startup/background health check. Marks invalid accounts so selection skips them."""
@@ -1183,6 +1426,46 @@ def _upstream_error(
                 409,
             )
 
+    # 解析上游 body 中的 status（官方 postAdmission 在 HTTP 200/4xx 都可能返回
+    # {status:"banned"|"country_blocked"|"rate_limited"|...}）。
+    data: dict[str, Any] = {}
+    try:
+        parsed = (
+            response.json()
+            if body is None
+            else httpx.Response(
+                response.status_code,
+                content=body,
+                headers=response.headers,
+            ).json()
+        )
+        if isinstance(parsed, dict):
+            data = parsed
+    except ValueError:
+        data = {}
+
+    status = data.get("status")
+    if status == "banned":
+        return CodebuffError(
+            f"{prefix}: account banned - {text}",
+            403,
+        )
+    if status == "country_blocked":
+        return CodebuffError(
+            f"{prefix}: country_blocked - {text}",
+            403,
+        )
+    if status == "rate_limited":
+        return CodebuffError(
+            f"{prefix}: 429 {text}",
+            429,
+        )
+    if data.get("error") == "free_mode_capacity_deferred":
+        return CodebuffError(
+            f"{prefix}: 429 {text}",
+            429,
+        )
+
     return CodebuffError(
         f"{prefix}: {response.status_code} {text}",
         502,
@@ -1220,3 +1503,16 @@ def _ad_message_content(content: Any) -> str:
     if isinstance(content, dict) and isinstance(content.get("text"), str):
         return content["text"]
     return str(content)
+
+
+def _token_prefix(token: str | None) -> str:
+    return (token or "")[:8] or "---"
+
+
+def _client_token(client: Any) -> str:
+    return getattr(getattr(client, "settings", None), "codebuff_token", "") or ""
+
+
+def _ad_chain_key(client: Any) -> str:
+    token = _client_token(client)
+    return token or f"client:{id(client)}"

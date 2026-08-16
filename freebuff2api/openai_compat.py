@@ -4,8 +4,8 @@ import time
 import uuid
 from typing import Any
 
-from .codebuff import FreebuffSession
-from .models import resolve_model
+from .codebuff import CodebuffError, FreebuffSession
+from .models import normalize_reasoning_effort, resolve_model
 
 
 # 官方 free-mode marker（对齐 pingmike2/freebuff2api-wokers 1.7.0 / Worker normalizeMessages）：
@@ -207,21 +207,61 @@ def build_upstream_payload(
     if payload.get("tools") is not None:
         payload["tools"] = inject_end_turn_signature(payload["tools"])
 
+    # reasoning_effort 按官方模型 efforts 表 clamp（防外来客户端指纹），
+    # 然后从 OpenAI 标准顶层字段移到 codebuff_metadata.freebuff_reasoning_effort：
+    # 官方桌面端 free-mode 就是这么传的（顶层不携带 reasoning_effort）。
+    reasoning_effort = payload.pop("reasoning_effort", None)
+    if reasoning_effort is not None:
+        reasoning_effort = normalize_reasoning_effort(
+            body.get("model"), reasoning_effort
+        )
+
     # 钳制输出上限（chat completions 路径，对齐 anthropic 路径行为）
     clamp_output_tokens(payload, body.get("model"))
 
     payload["provider"] = {"data_collection": "deny"}
-    payload["codebuff_metadata"] = {
+    metadata: dict[str, Any] = {
         "freebuff_instance_id": session.instance_id,
+        "freebuff_multi_session": "1",
         "trace_session_id": trace_session_id or str(uuid.uuid4()),
         "run_id": run_id,
         "client_id": client_id,
         "cost_mode": "free",
     }
+    if reasoning_effort is not None:
+        metadata["freebuff_reasoning_effort"] = reasoning_effort
+    payload["codebuff_metadata"] = metadata
     return payload
 
 
+def raise_for_stream_error(chunk: dict[str, Any]) -> None:
+    """识别上游 SSE 流内错误 chunk 并抛出 CodebuffError。
+
+    上游返回 200 时仍可能在 SSE 流内下发错误（例如账号级 policy violation）：
+    {"choices":[],"error":{"code":502,"message":"Policy Violation...","metadata":{...}}}
+    旧实现把它当无内容 chunk 丢弃，最终客户端收到 200 空响应。
+    官方 SDK chunk schema 允许 error 分支，AI SDK 会将其作为流内错误抛出。
+    """
+    error = chunk.get("error") if isinstance(chunk, dict) else None
+    if error is None:
+        return
+    if isinstance(error, dict):
+        message = str(
+            error.get("message")
+            or error.get("code")
+            or error.get("type")
+            or "Upstream stream error"
+        )
+        code = error.get("code")
+        status_code = code if isinstance(code, int) and 400 <= code <= 599 else 502
+    else:
+        message = str(error)
+        status_code = 502
+    raise CodebuffError(f"Codebuff chat stream error: {message}", status_code)
+
+
 def sanitize_stream_chunk(chunk: dict[str, Any]) -> dict[str, Any] | None:
+    raise_for_stream_error(chunk)
     clean = {
         "id": chunk.get("id") or f"chatcmpl-{uuid.uuid4().hex}",
         "object": chunk.get("object") or "chat.completion.chunk",
@@ -275,6 +315,7 @@ class CompletionAccumulator:
         return "".join(self.reasoning_parts)
 
     def add(self, chunk: dict[str, Any]) -> None:
+        raise_for_stream_error(chunk)
         self.id = chunk.get("id") or self.id
         self.created = chunk.get("created") or self.created
         self.model = chunk.get("model") or self.model

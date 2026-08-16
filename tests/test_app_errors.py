@@ -50,7 +50,8 @@ class AppErrorTests(unittest.TestCase):
         body = json.loads(response.body)
 
         self.assertEqual(response.status_code, 502)
-        self.assertEqual(body["error"]["message"], "network error")
+        self.assertIn("network error", body["error"]["message"])
+        self.assertEqual(body["error"]["upstream_message"], "network error")
         self.assertEqual(body["error"]["type"], "upstream_error")
 
     def test_finalize_skips_management_calls_and_does_not_raise(self) -> None:

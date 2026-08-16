@@ -99,7 +99,10 @@ def _fake_lease_for(client) -> SimpleNamespace:
             self.client = c
             self._sessions = {}
 
-        async def create_session(self, model):
+        def discard_session(self, model):
+            self._sessions.pop(model, None)
+
+        async def _create_session_locked(self, model):
             session = FreebuffSession(instance_id="new-instance", model=model)
             self._sessions[model] = session
             return session
@@ -190,7 +193,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.run_id, "run-1")
         self.assertEqual(run.chat_run_id, "run-2")
         self.assertEqual(run.payload_run_id, "run-2")
-        self.assertEqual(client.calls[0], ("start", "base2-free-kimi", [], "run-1"))
+        self.assertEqual(client.calls[0], ("start", "base2-free-kimi-k3-eco", [], "run-1"))
         self.assertEqual(
             client.calls[1],
             ("start", "thinker-with-files-gemini", ["run-1"], "run-2"),
@@ -201,7 +204,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
 
         run = await _start_freebuff_run_chain(
             client,
-            resolve_model("google/gemini-2.5-flash-lite"),
+            resolve_model("google/gemini-3.1-flash-lite"),
         )
 
         self.assertEqual(run.run_id, "run-1")

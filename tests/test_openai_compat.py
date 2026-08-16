@@ -1,6 +1,6 @@
 import unittest
 
-from freebuff2api.codebuff import FreebuffSession
+from freebuff2api.codebuff import CodebuffError, FreebuffSession
 from freebuff2api.models import (
     ALL_MODELS,
     CONTEXT_PRUNER_AGENT_ID,
@@ -27,9 +27,9 @@ class OpenAICompatTests(unittest.TestCase):
         )
 
     def test_resolve_model_maps_agent_id(self) -> None:
-        model = resolve_model("moonshotai/kimi-k2.6")
+        model = resolve_model("crof/kimi-k3-eco")
 
-        self.assertEqual(model.agent_id, "base2-free-kimi")
+        self.assertEqual(model.agent_id, "base2-free-kimi-k3-eco")
 
     def test_resolve_minimax_m3_maps_har_agent_id(self) -> None:
         model = resolve_model("minimax/minimax-m3")
@@ -40,23 +40,23 @@ class OpenAICompatTests(unittest.TestCase):
         model = resolve_model("google/gemini-3.1-pro-preview")
 
         self.assertEqual(model.agent_id, GEMINI_THINKER_AGENT_ID)
-        self.assertEqual(model.parent_agent_id, "base2-free-kimi")
-        self.assertEqual(model.session_id, "moonshotai/kimi-k2.6")
+        self.assertEqual(model.parent_agent_id, "base2-free-kimi-k3-eco")
+        self.assertEqual(model.session_id, "crof/kimi-k3-eco")
         self.assertEqual(model.upstream_id, "google/gemini-3.1-pro-preview")
 
     def test_resolve_gemini_flash_lite_runs_under_session_root(self) -> None:
-        model = resolve_model("google/gemini-2.5-flash-lite")
+        model = resolve_model("google/gemini-3.1-flash-lite")
 
         self.assertEqual(model.agent_id, "file-picker")
         self.assertEqual(model.parent_agent_id, "base2-free-deepseek-flash")
         self.assertEqual(model.session_id, "deepseek/deepseek-v4-flash")
 
     def test_resolve_gemini_flash_preview_uses_program_default_agent(self) -> None:
-        model = resolve_model("google/gemini-3.1-flash-lite-preview")
+        model = resolve_model("google/gemini-3.5-flash-lite")
 
         self.assertEqual(model.agent_id, "file-picker-max")
         self.assertEqual(model.parent_agent_id, "base2-free-deepseek-flash")
-        self.assertEqual(model.upstream_id, "google/gemini-3.1-flash-lite-preview")
+        self.assertEqual(model.upstream_id, "google/gemini-3.5-flash-lite")
 
     def test_agent_validation_payload_defines_spawnable_agents(self) -> None:
         payload = agent_validation_payload()
@@ -97,6 +97,7 @@ class OpenAICompatTests(unittest.TestCase):
             payload["codebuff_metadata"],
             {
                 "freebuff_instance_id": "instance-1",
+                "freebuff_multi_session": "1",
                 "trace_session_id": "trace-1",
                 "run_id": "run-1",
                 "client_id": "client-1",
@@ -341,6 +342,102 @@ class OpenAICompatTests(unittest.TestCase):
         delta = chunk["choices"][0]["delta"]
         self.assertNotIn("content", delta)
         self.assertEqual(delta["reasoning_content"], "hello")
+
+
+    def test_stream_chunk_raises_on_upstream_error(self) -> None:
+        """上游 200 但 SSE 流内下发 error chunk 时必须抛错，不能当空 chunk 丢弃。"""
+        with self.assertRaises(CodebuffError) as ctx:
+            sanitize_stream_chunk(
+                {
+                    "id": "chunk-1",
+                    "created": 1,
+                    "model": "openai/gpt-5.6-luna",
+                    "choices": [],
+                    "error": {
+                        "code": 502,
+                        "message": "Policy Violation: this user has been blocked for a previous policy violation.",
+                        "metadata": {"error_type": "provider_unavailable"},
+                    },
+                }
+            )
+
+        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertIn("Policy Violation", str(ctx.exception))
+
+    def test_accumulator_raises_on_upstream_error(self) -> None:
+        accumulator = CompletionAccumulator("openai/gpt-5.6-luna")
+
+        with self.assertRaises(CodebuffError):
+            accumulator.add(
+                {
+                    "id": "chunk-1",
+                    "created": 1,
+                    "model": "openai/gpt-5.6-luna",
+                    "choices": [],
+                    "error": {"code": 502, "message": "blocked by policy"},
+                }
+            )
+
+    def test_reasoning_effort_clamps_to_official_model_table(self) -> None:
+        payload = build_upstream_payload(
+            {
+                "model": "deepseek/deepseek-v4-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "ultra",
+            },
+            session=FreebuffSession(instance_id="i", model="deepseek/deepseek-v4-flash"),
+            run_id="run-1",
+            client_id="client-1",
+        )
+
+        # flash official efforts: low/high/max；ultra 不对齐官方允许列表 → 回退默认 high
+        # 且按官方 free-mode 传法放进 codebuff_metadata.freebuff_reasoning_effort
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(payload["codebuff_metadata"]["freebuff_reasoning_effort"], "high")
+
+    def test_reasoning_effort_valid_value_passes_through(self) -> None:
+        payload = build_upstream_payload(
+            {
+                "model": "deepseek/deepseek-v4-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "max",
+            },
+            session=FreebuffSession(instance_id="i", model="deepseek/deepseek-v4-flash"),
+            run_id="run-1",
+            client_id="client-1",
+        )
+
+        self.assertEqual(payload["codebuff_metadata"]["freebuff_reasoning_effort"], "max")
+
+    def test_reasoning_effort_dropped_for_model_without_effort_table(self) -> None:
+        payload = build_upstream_payload(
+            {
+                "model": "minimax/minimax-m3",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "high",
+            },
+            session=FreebuffSession(instance_id="i", model="minimax/minimax-m3"),
+            run_id="run-1",
+            client_id="client-1",
+        )
+
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertNotIn("freebuff_reasoning_effort", payload["codebuff_metadata"])
+
+    def test_reasoning_effort_passthrough_unknown_model(self) -> None:
+        payload = build_upstream_payload(
+            {
+                "model": "deepseek/deepseek-v4-flash",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": "medium",
+            },
+            session=FreebuffSession(instance_id="i", model="deepseek/deepseek-v4-flash"),
+            run_id="run-1",
+            client_id="client-1",
+        )
+
+        # flash 官方 efforts 不含 medium → 字段不对齐，回退默认 high
+        self.assertEqual(payload["codebuff_metadata"]["freebuff_reasoning_effort"], "high")
 
 
 if __name__ == "__main__":

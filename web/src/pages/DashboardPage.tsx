@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { useCallback, useState, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { usePolling } from "@/hooks/use-polling"
 import { api } from "@/lib/api-client"
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Activity, AlertTriangle, ArrowRight, CheckCircle2, Clock,
-  FileText, Key, Pencil, Plus, Server, Shield, XCircle,
+  FileText, Key, Pencil, Plus, RefreshCw, Server, Shield, XCircle,
 } from "lucide-react"
 
 interface StatCardProps {
@@ -222,6 +222,83 @@ function ModelAvailabilityCard({ overview, loading }: { overview?: OverviewData 
   )
 }
 
+function ModelRegistryCard({ overview, loading }: { overview?: OverviewData | null; loading: boolean }) {
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshResult, setRefreshResult] = useState<string | null>(null)
+  const registry = overview?.model_registry
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true)
+    setRefreshResult(null)
+    try {
+      const result = await api.refreshModelRegistry()
+      setRefreshResult(result.message || `已刷新，当前模型数：${result.model_count}`)
+    } catch (error) {
+      setRefreshResult(error instanceof Error ? error.message : "刷新失败")
+    } finally {
+      setRefreshing(false)
+    }
+  }, [])
+
+  const fetchedAt = registry?.fetched_at
+    ? new Date(registry.fetched_at * 1000).toLocaleString()
+    : null
+
+  return (
+    <Card className="border-border/60 shadow-sm">
+      <CardHeader className="pb-1">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="flex items-center gap-2 text-sm font-medium">
+            <RefreshCw className="size-4 text-primary" />模型注册表
+          </CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={refresh}
+            disabled={refreshing}
+          >
+            <RefreshCw className={`mr-1 size-3 ${refreshing ? "animate-spin" : ""}`} />
+            {refreshing ? "刷新中" : "刷新"}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 text-xs">
+        {loading ? (
+          <Skeleton className="h-20 w-full" />
+        ) : registry ? (
+          <>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">状态</span>
+              <Badge variant={registry.loaded ? "default" : "destructive"}>
+                {registry.loaded ? `已加载 · ${registry.model_count} 个模型` : "未加载"}
+              </Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">最后刷新</span>
+              <span>{fetchedAt ?? "-"}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">刷新间隔</span>
+              <span>{Math.round((registry.refresh_interval_seconds ?? 0) / 3600)} 小时</span>
+            </div>
+            {registry.last_error && (
+              <div className="rounded-lg bg-destructive/10 px-2 py-1.5 text-destructive">
+                {registry.last_error}
+              </div>
+            )}
+            {refreshResult && (
+              <div className="rounded-lg bg-success-muted/30 px-2 py-1.5 text-success">{refreshResult}</div>
+            )}
+          </>
+        ) : (
+          <p className="py-4 text-center text-muted-foreground">暂无注册表数据</p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function QuickActionsCard() {
   const navigate = useNavigate()
   const actions = [
@@ -279,6 +356,7 @@ export default function DashboardPage() {
           <ModelAvailabilityCard overview={overview ?? undefined} loading={loading} />
         </div>
         <div className="space-y-5">
+          <ModelRegistryCard overview={overview ?? undefined} loading={loading} />
           <QuickActionsCard />
           <Card className="border-border/60 shadow-sm">
             <CardHeader className="pb-1">

@@ -34,8 +34,26 @@ GLOBAL_MODEL_KEY = ""
 
 
 def is_rate_limit_error(error_message: str) -> bool:
-    """Check if an error message string indicates a 429 rate limit."""
+    """Check if an error message string indicates a normal 429 rate limit."""
     return "429" in error_message and "rate_limited" in error_message
+
+
+def is_ban_error(error_message: str) -> bool:
+    """Check if an error message indicates an account/network ban (not quota)."""
+    lower = error_message.lower()
+    return "banned" in lower or "country_blocked" in lower or "policy violation" in lower
+
+
+def next_beijing_1500_epoch(now: float | None = None) -> float:
+    """Return the next 15:00 Asia/Shanghai time as epoch seconds.
+
+    账号被 ban 后，限制模型直到下一个北京时间 15 点才解放。
+    """
+    now_dt = datetime.now(SHA_TZ) if now is None else datetime.fromtimestamp(now, SHA_TZ)
+    target = now_dt.replace(hour=15, minute=0, second=0, microsecond=0)
+    if target <= now_dt:
+        target += timedelta(days=1)
+    return target.timestamp()
 
 
 def parse_429_info(error_message: str) -> dict:

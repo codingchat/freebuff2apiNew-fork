@@ -12,7 +12,9 @@ class ConfigTests(unittest.TestCase):
             codebuff_token="token",
             local_api_key=None,
             proxy_enabled=False,
-            proxy_url="http://127.0.0.1:7890",
+            proxy_type="http",
+            proxy_host="127.0.0.1",
+            proxy_port=7890,
         )
 
         self.assertIsNone(settings.upstream_proxy_url)
@@ -22,7 +24,9 @@ class ConfigTests(unittest.TestCase):
             codebuff_token="token",
             local_api_key=None,
             proxy_enabled=True,
-            proxy_url=" http://127.0.0.1:7890 ",
+            proxy_type="http",
+            proxy_host="127.0.0.1",
+            proxy_port=7890,
         )
 
         self.assertEqual(settings.upstream_proxy_url, "http://127.0.0.1:7890")
@@ -32,7 +36,9 @@ class ConfigTests(unittest.TestCase):
             "os.environ",
             {
                 "FREEBUFF_PROXY_ENABLED": "true",
-                "FREEBUFF_PROXY_URL": "socks5://127.0.0.1:1080",
+                "FREEBUFF_PROXY_TYPE": "socks5",
+                "FREEBUFF_PROXY_HOST": "127.0.0.1",
+                "FREEBUFF_PROXY_PORT": "1080",
             },
         ):
             settings = load_settings()

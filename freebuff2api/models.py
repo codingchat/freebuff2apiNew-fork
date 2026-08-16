@@ -20,6 +20,10 @@ class FreebuffModel:
     max_output_tokens: int = 32_768  # 统一保守输出上限（上游实测）
     input_modalities: tuple[str, ...] = ("text",)
     output_modalities: tuple[str, ...] = ("text",)
+    # 官方 per-model reasoning effort 限制（来自 orchestrator.js freebuff-models.ts）。
+    # None 表示官方未定义 efforts（不干预透传）。
+    reasoning_efforts: tuple[str, ...] | None = None
+    default_reasoning_effort: str | None = None
 
     @property
     def upstream_id(self) -> str:
@@ -39,13 +43,17 @@ FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
         base3_agent_id="base3-free-deepseek-flash",
         reviewer_agent_id="code-reviewer-deepseek-flash",
         context_window=1_048_576,
+        reasoning_efforts=("low", "high", "max"),
+        default_reasoning_effort="high",
     ),
     FreebuffModel(
         "deepseek/deepseek-v4-pro",
         "base2-free-deepseek",
         base3_agent_id="base3-free-deepseek",
         reviewer_agent_id="code-reviewer-deepseek",
-        context_window=131_072,
+        context_window=1_048_576,
+        reasoning_efforts=("low", "high", "max"),
+        default_reasoning_effort="high",
     ),
     FreebuffModel(
         "mimo/mimo-v2.5",
@@ -68,6 +76,8 @@ FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
         base3_agent_id="base3-free-luna",
         reviewer_agent_id="code-reviewer-luna",
         context_window=1_000_000,
+        reasoning_efforts=("low", "medium", "high", "xhigh", "max"),
+        default_reasoning_effort="high",
     ),
     FreebuffModel(
         "z-ai/glm-5.2",
@@ -88,16 +98,38 @@ FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
         base3_agent_id="base3-free-fable",
         reviewer_agent_id="code-reviewer-fable",
         context_window=131_072,
+        reasoning_efforts=("low", "medium", "high", "xhigh", "max"),
+        default_reasoning_effort="high",
     ),
     FreebuffModel(
         "meta/muse-spark-1.2-contributor",
         "base2-free-muse-spark",
         base3_agent_id="base3-free-muse-spark",
         context_window=1_000_000,
+        reasoning_efforts=("minimal", "low", "medium", "high", "xhigh"),
+        default_reasoning_effort="xhigh",
     ),
 )
 
 DEFAULT_MODEL = FREEBUFF_MODELS[0]
+
+# 官方 desktop session bucket：unlimited 只有 flash / mimo（Web 标准池也是这两个）。
+# 其余 freebuff 模型全部占 premium bucket（premium:1）。
+UNLIMITED_SESSION_MODEL_IDS = frozenset(
+    {
+        "deepseek/deepseek-v4-flash",
+        "mimo/mimo-v2.5",
+    }
+)
+
+
+def session_bucket_for_model(model: str) -> str:
+    """返回官方 desktop session bucket：``premium`` 或 ``unlimited``。"""
+    if model in UNLIMITED_SESSION_MODEL_IDS:
+        return "unlimited"
+    return "premium"
+
+
 CONTEXT_PRUNER_AGENT_ID = "context-pruner"
 GEMINI_THINKER_AGENT_ID = "thinker-with-files-gemini"
 GEMINI_THINKER_PARENT_AGENT_ID = "base2-free-kimi-k3-eco"
@@ -132,6 +164,78 @@ HARDCODED_MODELS = FREEBUFF_MODELS + GEMINI_FREE_MODELS
 # 兼容旧引用（admin.py overview 等仍导入 ALL_MODELS）。
 ALL_MODELS = HARDCODED_MODELS
 
+# ── Reasoning effort 档位与钳制 ─────────────────────────────────────
+# 官方 per-model efforts 来自 orchestrator.js freebuff-models.ts：
+#   deepseek-v4-flash / pro: ["low", "high", "max"]（default high）
+#   gpt-5.6-luna:              ["low", "medium", "high", "xhigh", "max"]（default high）
+#   muse-spark-1.2:            ["minimal", "low", "medium", "high", "xhigh"]（default xhigh）
+#   claude-fable-5:            ["low", "medium", "high", "xhigh", "max"]（default high）
+# 其余模型官方未定义 efforts（minimax-m3 官方 adaptive/disabled thinking，不设档位）。
+# 第三方客户端传了模型不支持的档位时，按官方 efforts 表钳制到最近可用档位，
+# 不拒绝、不换模型（与 worker.js normalizeReasoningEffort 语义一致）。
+REASONING_EFFORT_RANK = {
+    "minimal": 0,
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "xhigh": 4,
+    "max": 5,
+    "ultra": 6,
+}
+
+
+def clamp_reasoning_effort(requested: str, allowed: tuple[str, ...]) -> str:
+    """Clamp one reasoning effort to the nearest allowed value (never raise).
+
+    Unknown requested values are passed through unchanged (upstream can decide).
+    """
+    if not allowed:
+        return requested
+    wanted = REASONING_EFFORT_RANK.get(requested)
+    if wanted is None:
+        return requested
+    best: str | None = None
+    best_rank = -1
+    for candidate in allowed:
+        rank = REASONING_EFFORT_RANK.get(candidate)
+        if rank is None or rank > wanted:
+            continue
+        if rank > best_rank:
+            best = candidate
+            best_rank = rank
+    if best is not None:
+        return best
+    # All allowed values are higher than requested → use the lowest allowed.
+    return min(allowed, key=lambda candidate: REASONING_EFFORT_RANK.get(candidate, 99))
+
+
+def normalize_reasoning_effort(model_id: str | None, effort: str | None) -> str | None:
+    """按官方 0.0.63 模型表校验并归一化 ``reasoning_effort``。
+
+    规则（对标桌面端 0.0.63）：
+    - 模型官方支持 effort 调整（``reasoning_efforts`` 非空）：
+      客户端传的值在允许列表内 → 放行；不在列表内 / 字段不对齐 → 回退官方默认值。
+    - 模型官方不支持 effort 调整（``reasoning_efforts`` 为空）：
+      一律返回 None（即不发送该字段，交给上游默认）。
+    - 未知模型：返回 None（不干预，也不透传）。
+    """
+    if effort is None:
+        return None
+    try:
+        model = resolve_model(model_id)
+        allowed = model.reasoning_efforts
+        default = model.default_reasoning_effort
+    except ValueError:
+        allowed = None
+        default = None
+    if not allowed:
+        return None
+    requested = str(effort)
+    if requested in allowed:
+        return requested
+    return default
+
+
 # 运行时动态注册表：模块导入即创建，并启动后台线程抓取一次官方模型映射。
 # 抓取完成前 resolve_model 回退硬编码表，不阻塞服务启动。
 _registry = ModelRegistry()
@@ -148,11 +252,20 @@ def get_model_registry() -> ModelRegistry:
 
 
 def _model_from_dynamic(entry: DynamicModelEntry) -> FreebuffModel:
+    # 动态表只提供 agent 映射；模型参数/effort 限制优先继承硬编码兜底表，
+    # 避免动态刷新后 reasoning_effort 钳制、context_window/max_output_tokens 等丢失。
+    hardcoded = _hardcoded_by_id(entry.id)
     return FreebuffModel(
         entry.id,
         entry.agent_id,
         base3_agent_id=entry.base3_agent_id,
         reviewer_agent_id=entry.reviewer_agent_id,
+        context_window=hardcoded.context_window if hardcoded else 131_072,
+        max_output_tokens=hardcoded.max_output_tokens if hardcoded else 32_768,
+        input_modalities=hardcoded.input_modalities if hardcoded else ("text",),
+        output_modalities=hardcoded.output_modalities if hardcoded else ("text",),
+        reasoning_efforts=hardcoded.reasoning_efforts if hardcoded else None,
+        default_reasoning_effort=hardcoded.default_reasoning_effort if hardcoded else None,
     )
 
 

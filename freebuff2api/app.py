@@ -158,18 +158,58 @@ def _check_anthropic_auth(request: Request, *, require_configured: bool = False)
     return key
 
 
+def _friendly_upstream_message(error: Exception) -> str:
+    """把上游错误包一层客户端可读的解释。
+
+    空流/限流/风控这些错误如果只透传原始英文，客户端会一脸懵并且可能
+    无限重试。这里保留原始信息，同时给出可操作的排查方向。
+    """
+    original = str(error)
+    lower = original.lower()
+    if "empty stream" in lower or "空流" in original:
+        hint = (
+            "上游返回空流：通常表示该模型/账号的免费额度已耗尽、出口 IP 被风控、"
+            "或账号被临时限制。建议稍后重试、切换模型，或更换账号/节点。"
+        )
+    elif "policy violation" in lower:
+        hint = (
+            "上游策略违规：该账号已被模型提供商策略风控，可能是账号级限制，"
+            "通常需等待次日重置或更换账号。"
+        )
+    elif "country_blocked" in lower or "banned" in lower:
+        hint = "上游判定当前账号或出口地区受限：请更换美国出口节点，或更换账号。"
+    elif "429" in original or "rate" in lower or "capacity" in lower:
+        hint = "上游限流/容量已满：请稍后重试，或切换到其他模型/账号。"
+    elif "waiting_room_required" in lower or "428" in original:
+        hint = "上游 session 已失效：服务会自动重建，重试一次通常可恢复。"
+    elif "session_model_mismatch" in lower or "session_superseded" in lower:
+        hint = "上游 session 状态冲突：请重试，服务会尝试重建 session。"
+    else:
+        hint = "上游返回错误：请检查账号额度、出口 IP 与模型可用性后重试。"
+    return f"{original}（{hint}）"
+
+
+def _wrapped_error(error: Exception) -> CodebuffError | Exception:
+    if isinstance(error, CodebuffError):
+        return CodebuffError(_friendly_upstream_message(error), error.status_code)
+    return error
+
+
 def _error_response(error: Exception) -> JSONResponse:
     if isinstance(error, CodebuffError):
+        friendly = _wrapped_error(error)
+        assert isinstance(friendly, CodebuffError)
         headers: dict[str, str] = {}
-        if error.status_code == 429:
+        if friendly.status_code == 429:
             retry_ms = parse_429_info(str(error)).get("retry_after_ms", 0)
             if retry_ms:
                 headers["Retry-After"] = str(max(1, round(retry_ms / 1000)))
         return JSONResponse(
-            status_code=error.status_code,
+            status_code=friendly.status_code,
             content={
                 "error": {
-                    "message": str(error),
+                    "message": str(friendly),
+                    "upstream_message": str(error),
                     "type": "upstream_error",
                     "code": "codebuff_error",
                 }
@@ -190,7 +230,7 @@ def _handle_upstream_error(request: Request, account_index: int | None, error: E
     if error.status_code == 428:
         try:
             account = accounts._accounts[account_index]
-            account.sessions._sessions.pop(model, None)
+            account.sessions.discard_session(model)
         except Exception:
             pass
         logger.warning(
@@ -218,9 +258,10 @@ async def _recreate_session_and_run_for_retry(
         sessions = account.sessions
         model = payload.get("model") or ""
         await client.delete_session(account_lease.session.instance_id)
-        sessions._sessions.clear()
-        new_session = await sessions.create_session(model)
-        sessions._sessions[model] = new_session
+        sessions.discard_session(model)
+        # 注意：此处调用方仍持有该 bucket 的会话锁，必须走锁内私有方法，
+        # 不能调用 ensure_session（会再次获取同一把锁导致死锁）。
+        new_session = await sessions._create_session_locked(model)
         new_run = await _start_freebuff_run_chain(client, model)
         client_id = (payload.get("codebuff_metadata") or {}).get("client_id") or ""
         return build_upstream_payload(
@@ -397,6 +438,7 @@ async def chat_completions(request: Request) -> Any:
             run,
             model,
             client=lease.client,
+            account_lease=lease,
         )
         duration_ms = int((time.time() - started) * 1000)
         usage = response.get("usage") or {}
@@ -501,7 +543,8 @@ async def _stream_openai_chunks(
         yield encode_sse(
             {
                 "error": {
-                    "message": str(error),
+                    "message": _friendly_upstream_message(error),
+                    "upstream_message": str(error),
                     "type": "upstream_error",
                     "code": "codebuff_error",
                 }
@@ -552,19 +595,45 @@ async def _collect_completion(
     model: str,
     *,
     client: CodebuffClient | None = None,
+    account_lease: CodebuffAccountLease | None = None,
 ) -> dict[str, Any]:
     message_id: str | None = None
     accumulator = CompletionAccumulator(model)
     client = client or _client(request)
+    retried = False
     try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
-            if data is None:
-                continue
-            if data == "[DONE]":
+        while True:
+            try:
+                async for line in client.chat_events(payload):
+                    data = decode_sse_data(line)
+                    if data is None:
+                        continue
+                    if data == "[DONE]":
+                        break
+                    message_id = data.get("id") or message_id
+                    accumulator.add(data)
                 break
-            message_id = data.get("id") or message_id
-            accumulator.add(data)
+            except CodebuffError as error:
+                # 空流恢复（与流式路径一致）：尚未累积任何内容时，重建同模型
+                # session + run 重试一次；仍失败则把友好错误抛给上层返回客户端。
+                if (
+                    not retried
+                    and "empty stream" in str(error)
+                    and account_lease is not None
+                ):
+                    retried = True
+                    new_payload = await _recreate_session_and_run_for_retry(
+                        account_lease, payload
+                    )
+                    if new_payload is not None:
+                        payload = new_payload
+                        accumulator = CompletionAccumulator(model)
+                        logger.warning(
+                            "empty stream detected; recreated session and retrying model=%s",
+                            payload.get("model"),
+                        )
+                        continue
+                raise
         response = accumulator.final_response()
         logger.info(
             "chat completion response run_id=%s message_id=%s content_chars=%s finish_reason=%s",
@@ -583,6 +652,46 @@ async def _collect_completion(
         await _finalize_run(request, run, message_id, client=client)
 
 
+# run_id 缓存（对齐 Worker RUN_CACHE_TTL_MS）：上游 chat 只校验 run_id 存在，
+# 可跨请求复用，10 分钟缓存省掉每次请求 2 次 agent-runs 调用。
+_RUN_CACHE_TTL_SECONDS = 10 * 60
+_run_cache: dict[str, tuple[float, FreebuffRun]] = {}
+
+
+def _cached_run(key: str) -> FreebuffRun | None:
+    now = time.monotonic()
+    if len(_run_cache) > 200:
+        expired = [k for k, (ts, _) in _run_cache.items() if now - ts > _RUN_CACHE_TTL_SECONDS]
+        for k in expired:
+            _run_cache.pop(k, None)
+    hit = _run_cache.get(key)
+    if hit is None:
+        return None
+    ts, cached_run = hit
+    if now - ts >= _RUN_CACHE_TTL_SECONDS:
+        _run_cache.pop(key, None)
+        return None
+    if cached_run.chat_run_id:
+        return FreebuffRun(
+            run_id=cached_run.run_id,
+            agent_id=cached_run.agent_id,
+            started_at=utc_now_iso(),
+            child_run_id=cached_run.child_run_id,
+            chat_run_id=cached_run.chat_run_id,
+            chat_started_at=utc_now_iso(),
+        )
+    return FreebuffRun(
+        run_id=cached_run.run_id,
+        agent_id=cached_run.agent_id,
+        started_at=utc_now_iso(),
+        child_run_id=cached_run.child_run_id,
+    )
+
+
+def _store_cached_run(key: str, run: FreebuffRun) -> None:
+    _run_cache[key] = (time.monotonic(), run)
+
+
 async def _start_freebuff_run_chain(
     client: CodebuffClient,
     model: FreebuffModel | str,
@@ -596,18 +705,27 @@ async def _start_freebuff_run_chain(
     # 子 run。chat 只校验 run_id 存在，recordRunStep/finishRun 可跳过——去掉这些
     # 额外管理请求可缩小请求特征暴露面（旧 CLI 行为已被上游统计）。
     agent_id = model.agent_id
+    token = getattr(getattr(client, "settings", None), "codebuff_token", "") or ""
+    cache_key = f"{token}:{agent_id}"
+    cached = _cached_run(cache_key)
+    if cached is not None:
+        logger.debug("reuse cached freebuff run agent_id=%s", agent_id)
+        return cached
+
     started_at = utc_now_iso()
     run_id = await client.start_run(agent_id)
     child_run_id = await client.start_run(
         CONTEXT_PRUNER_AGENT_ID,
         ancestor_run_ids=[run_id],
     )
-    return FreebuffRun(
+    run = FreebuffRun(
         run_id=run_id,
         agent_id=agent_id,
         started_at=started_at,
         child_run_id=child_run_id,
     )
+    _store_cached_run(cache_key, run)
+    return run
 
 
 async def _start_child_chat_run_chain(
@@ -616,6 +734,13 @@ async def _start_child_chat_run_chain(
 ) -> FreebuffRun:
     assert model.parent_agent_id is not None
 
+    token = getattr(getattr(client, "settings", None), "codebuff_token", "") or ""
+    cache_key = f"{token}:child:{model.agent_id}"
+    cached = _cached_run(cache_key)
+    if cached is not None:
+        logger.debug("reuse cached freebuff child run agent_id=%s", model.agent_id)
+        return cached
+
     started_at = utc_now_iso()
     parent_run_id = await client.start_run(model.parent_agent_id)
     chat_started_at = utc_now_iso()
@@ -623,7 +748,7 @@ async def _start_child_chat_run_chain(
         model.agent_id,
         ancestor_run_ids=[parent_run_id],
     )
-    return FreebuffRun(
+    run = FreebuffRun(
         run_id=parent_run_id,
         agent_id=model.parent_agent_id,
         started_at=started_at,
@@ -631,6 +756,8 @@ async def _start_child_chat_run_chain(
         chat_run_id=chat_run_id,
         chat_started_at=chat_started_at,
     )
+    _store_cached_run(cache_key, run)
+    return run
 
 
 async def _finalize_run(
@@ -786,7 +913,9 @@ async def anthropic_messages(request: Request) -> Any:
         status_code = getattr(error, "status_code", 502)
         return JSONResponse(
             status_code=status_code,
-            content=anthropic_error_payload(str(error), status_code=status_code),
+            content=anthropic_error_payload(
+                _friendly_upstream_message(error), status_code=status_code
+            ),
         )
     except Exception as error:
         if lease is not None:
@@ -816,6 +945,7 @@ async def anthropic_messages(request: Request) -> Any:
             run,
             requested_model,
             client=lease.client,
+            account_lease=lease,
         )
         duration_ms = int((time.time() - started) * 1000)
         _record_request(request, api_key, model, duration_ms, "success",
@@ -827,9 +957,12 @@ async def anthropic_messages(request: Request) -> Any:
         duration_ms = int((time.time() - started) * 1000)
         _record_request(request, api_key, model, duration_ms, "error", error=str(error))
         _handle_upstream_error(request, lease._account_index, error, model)
+        status_code = getattr(error, "status_code", 500)
         return JSONResponse(
-            status_code=500,
-            content=anthropic_error_payload(str(error)),
+            status_code=status_code,
+            content=anthropic_error_payload(
+                _friendly_upstream_message(error), status_code=status_code
+            ),
         )
     finally:
         await lease.aclose()
@@ -926,7 +1059,7 @@ async def _stream_anthropic_events(
             error,
             exc_info=settings.debug,
         )
-        error_payload = anthropic_error_payload(str(error))
+        error_payload = anthropic_error_payload(_friendly_upstream_message(error))
         yield anthropic_sse_encode("error", error_payload)
         # 错误后也补 finalize（message_stop），保证 Anthropic 客户端能收尾
         for sse_line in _emit_finalize():
@@ -938,7 +1071,7 @@ async def _stream_anthropic_events(
             "anthropic stream unexpected error run_id=%s",
             run.run_id,
         )
-        error_payload = anthropic_error_payload(str(error))
+        error_payload = anthropic_error_payload(_friendly_upstream_message(error))
         yield anthropic_sse_encode("error", error_payload)
         for sse_line in _emit_finalize():
             yield sse_line
@@ -963,17 +1096,41 @@ async def _collect_anthropic_message(
     model: str,
     *,
     client: CodebuffClient | None = None,
+    account_lease: CodebuffAccountLease | None = None,
 ) -> dict[str, Any]:
     accumulator = AnthropicCompletionAccumulator(model)
     client = client or _client(request)
+    retried = False
     try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
-            if data is None:
-                continue
-            if data == "[DONE]":
+        while True:
+            try:
+                async for line in client.chat_events(payload):
+                    data = decode_sse_data(line)
+                    if data is None:
+                        continue
+                    if data == "[DONE]":
+                        break
+                    accumulator.add(data)
                 break
-            accumulator.add(data)
+            except CodebuffError as error:
+                if (
+                    not retried
+                    and "empty stream" in str(error)
+                    and account_lease is not None
+                ):
+                    retried = True
+                    new_payload = await _recreate_session_and_run_for_retry(
+                        account_lease, payload
+                    )
+                    if new_payload is not None:
+                        payload = new_payload
+                        accumulator = AnthropicCompletionAccumulator(model)
+                        logger.warning(
+                            "empty stream detected; recreated session and retrying model=%s",
+                            payload.get("model"),
+                        )
+                        continue
+                raise
         response = accumulator.final_response()
         content_blocks = len(response.get("content") or [])
         stop_reason = response.get("stop_reason")

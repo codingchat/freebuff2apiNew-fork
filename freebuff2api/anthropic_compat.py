@@ -6,11 +6,12 @@ import uuid as uuid_mod
 from typing import Any
 
 from .codebuff import FreebuffSession
-from .models import resolve_model
+from .models import normalize_reasoning_effort, resolve_model
 from .openai_compat import (
     clamp_output_tokens,
     inject_end_turn_signature,
     normalize_chat_messages,
+    raise_for_stream_error,
 )
 
 
@@ -362,6 +363,15 @@ def build_anthropic_upstream_payload(
     # 否则上游可能不返回 usage，anthropic 流式输出缺 token 统计。
     if body.get("stream") is True:
         payload["stream_options"] = {"include_usage": True}
+    # reasoning_effort 按官方模型 efforts 表 clamp（防外来客户端指纹），
+    # 然后从 OpenAI 标准顶层字段移到 codebuff_metadata.freebuff_reasoning_effort
+    #（官方桌面端 free-mode 的传法；顶层不携带 reasoning_effort）。
+    reasoning_effort = payload.pop("reasoning_effort", None)
+    if reasoning_effort is not None:
+        reasoning_effort = normalize_reasoning_effort(
+            model_id, reasoning_effort
+        )
+
     # 输出上限：先钳制到模型上限（客户端可能传 64,000 等超限值 → 上游空流），
     # 再按 Worker 1.7.2 惯例映射为 max_completion_tokens（deepseek 等上游
     # 对旧字段 max_tokens 的校验更严）。输入上下文由 /v1/models 下发的
@@ -394,13 +404,17 @@ def build_anthropic_upstream_payload(
 
     # Metadata.
     payload["provider"] = {"data_collection": "deny"}
-    payload["codebuff_metadata"] = {
+    metadata: dict[str, Any] = {
         "freebuff_instance_id": session.instance_id,
+        "freebuff_multi_session": "1",
         "trace_session_id": trace_session_id or str(uuid_mod.uuid4()),
         "run_id": run_id,
         "client_id": client_id,
         "cost_mode": "free",
     }
+    if reasoning_effort is not None:
+        metadata["freebuff_reasoning_effort"] = reasoning_effort
+    payload["codebuff_metadata"] = metadata
     return payload
 
 
@@ -435,6 +449,7 @@ class AnthropicCompletionAccumulator:
 
     def add(self, chunk: dict[str, Any]) -> None:
         """Ingest one OpenAI SSE chunk."""
+        raise_for_stream_error(chunk)
         self.id = chunk.get("id") or self.id
         self.created = chunk.get("created") or self.created
         self.usage = chunk.get("usage") or self.usage
@@ -585,6 +600,7 @@ class AnthropicStreamState:
     ) -> list[tuple[str, dict[str, Any]]]:
         """Process one OpenAI chunk, return a list of (event_type, data) tuples
         ready for SSE encoding."""
+        raise_for_stream_error(chunk)
         events: list[tuple[str, dict[str, Any]]] = []
 
         self.message_id = chunk.get("id") or self.message_id
