@@ -291,7 +291,9 @@ class AnthropicUpstreamPayloadTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["stream"], True)
-        self.assertEqual(payload["max_tokens"], 200)
+        # max_tokens 映射为 max_completion_tokens（对齐 Worker 1.7.2 anthropicToChat）
+        self.assertEqual(payload["max_completion_tokens"], 200)
+        self.assertNotIn("max_tokens", payload)
         self.assertIn("messages", payload)
         self.assertIn("codebuff_metadata", payload)
         self.assertEqual(
@@ -818,6 +820,23 @@ class AnthropicErrorTests(unittest.TestCase):
 
         self.assertEqual(payload["error"]["type"], "invalid_request_error")
         self.assertEqual(payload["error"]["message"], "Invalid model")
+
+    def test_max_tokens_clamped_to_model_ceiling(self) -> None:
+        body = {
+            "model": "deepseek/deepseek-v4-flash",
+            "max_tokens": 64000,
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        payload = build_anthropic_upstream_payload(
+            body,
+            session=_session(),
+            run_id="run-1",
+            client_id="client-1",
+        )
+
+        # 64000 超模型上限 32768 → 钳制并映射为 max_completion_tokens
+        self.assertEqual(payload["max_completion_tokens"], 32_768)
+        self.assertNotIn("max_tokens", payload)
 
 
 if __name__ == "__main__":

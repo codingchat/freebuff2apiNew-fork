@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 from freebuff2api.app import _start_freebuff_run_chain, _stream_openai_chunks
-from freebuff2api.codebuff import CodebuffError, FreebuffRun
+from freebuff2api.codebuff import CodebuffError, FreebuffRun, FreebuffSession
 from freebuff2api.config import Settings
 from freebuff2api.models import resolve_model
 
@@ -47,6 +47,85 @@ class FailingStreamClient(FakeClient):
         yield
 
 
+class NoDoneStreamClient(FakeClient):
+    """上游 EOF 但从不发 [DONE]（免费通道长对话常见行为）。"""
+
+    async def chat_events(self, payload):
+        yield (
+            'data: {"id":"chunk-1","object":"chat.completion.chunk",'
+            '"created":1,"model":"deepseek/deepseek-v4-flash",'
+            '"choices":[{"index":0,"delta":{"content":"answer",'
+            '"reasoning_content":null},"finish_reason":"stop"}]}'
+        )
+        # 不 yield "[DONE]",直接 EOF
+
+
+class UnexpectedErrorStreamClient(FakeClient):
+    """上游流中途抛未预期异常（非 CodebuffError）。"""
+
+    async def chat_events(self, payload):
+        yield 'data: {"id":"chunk-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
+        raise RuntimeError("stream broke mid-way")
+
+
+class EmptyThenOkStreamClient(FakeClient):
+    """第一次调用返回空流错误，第二次返回正常内容（验证空流重试）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.chat_calls = 0
+
+    async def delete_session(self, instance_id=None) -> None:
+        return None
+
+    async def chat_events(self, payload):
+        self.chat_calls += 1
+        if self.chat_calls == 1:
+            raise CodebuffError("Codebuff chat returned empty stream", 502)
+        yield (
+            'data: {"id":"chunk-1","object":"chat.completion.chunk",'
+            '"created":1,"model":"deepseek/deepseek-v4-flash",'
+            '"choices":[{"index":0,"delta":{"content":"ok",'
+            '"reasoning_content":null},"finish_reason":"stop"}]}'
+        )
+        yield "data: [DONE]"
+
+
+def _fake_lease_for(client) -> SimpleNamespace:
+    """构造与 CodebuffAccountLease 兼容的桩（空流重试 helper 依赖其内部结构）。"""
+
+    class _Sessions:
+        def __init__(self, c):
+            self.client = c
+            self._sessions = {}
+
+        async def create_session(self, model):
+            session = FreebuffSession(instance_id="new-instance", model=model)
+            self._sessions[model] = session
+            return session
+
+    class _Account:
+        def __init__(self, c):
+            self.client = c
+            self.sessions = _Sessions(c)
+
+    class _Pool:
+        def __init__(self, c):
+            self._accounts = [_Account(c)]
+
+    return _FakeLease(
+        client=client,
+        session=FreebuffSession(instance_id="old-instance", model="deepseek/deepseek-v4-flash"),
+        _pool=_Pool(client),
+        _account_index=0,
+    )
+
+
+class _FakeLease(SimpleNamespace):
+    async def aclose(self) -> None:
+        return None
+
+
 class StreamingTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_forwards_content_before_finalize(self) -> None:
         client = FakeClient()
@@ -80,8 +159,10 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks[1], "data: [DONE]\n\n")
 
         await asyncio.sleep(0.05)
-        self.assertTrue(client.recorded)
-        self.assertTrue(client.finished)
+        # 精简版（对齐 Worker 1.7.0）：finalize 不再调用 record_step/finish_run，
+        # 只 START 两个 run。断言不再产生管理端调用。
+        self.assertFalse(client.recorded)
+        self.assertFalse(client.finished)
 
     async def test_run_chain_matches_freebuff_parent_child_shape(self) -> None:
         client = FakeClient()
@@ -95,25 +176,8 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
             client.calls[1],
             ("start", "context-pruner", ["run-1"], "run-2"),
         )
-        self.assertEqual(client.calls[2][0], "step")
-        self.assertEqual(client.calls[2][1], ("run-2",))
-        self.assertEqual(client.calls[2][2]["step_number"], 1)
-        self.assertEqual(client.calls[2][2]["child_run_ids"], [])
-        self.assertEqual(client.calls[2][2]["message_id"], None)
-        self.assertEqual(client.calls[3], ("finish", ("run-2",), {"total_steps": 2}))
-        self.assertEqual(
-            client.calls[4],
-            (
-                "step",
-                ("run-1",),
-                {
-                    "step_number": 1,
-                    "child_run_ids": ["run-2"],
-                    "message_id": None,
-                    "start_time": run.started_at,
-                },
-            ),
-        )
+        # 精简版：只 START 两个 run，不再打 record_step / finish_run 管理请求。
+        self.assertEqual(len(client.calls), 2)
 
     async def test_gemini_thinker_run_chain_uses_child_as_payload_run(self) -> None:
         client = FakeClient()
@@ -180,6 +244,104 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         error_payload = json.loads(chunks[0].removeprefix("data: ").strip())
         self.assertEqual(error_payload["error"]["code"], "codebuff_error")
         self.assertEqual(chunks[1], "data: [DONE]\n\n")
+
+    async def test_stream_appends_done_when_upstream_eof_without_done(self) -> None:
+        client = NoDoneStreamClient()
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    codebuff=client,
+                    settings=Settings(
+                        codebuff_token="token",
+                        local_api_key=None,
+                        debug=False,
+                    ),
+                )
+            )
+        )
+        run = FreebuffRun(
+            run_id="run-1",
+            agent_id="base2-free-deepseek-flash",
+            started_at="2026-05-23T00:00:00.000Z",
+        )
+
+        chunks = [
+            chunk.decode("utf-8")
+            async for chunk in _stream_openai_chunks(request, {}, run)
+        ]
+
+        # 上游 EOF 无 [DONE] → 末尾补发 [DONE]，客户端不会报 "terminated"
+        self.assertEqual(chunks[-1], "data: [DONE]\n\n")
+        self.assertEqual(chunks[0].count("[DONE]"), 0)  # 内容块正常透传
+
+    async def test_stream_unexpected_error_still_emits_done(self) -> None:
+        client = UnexpectedErrorStreamClient()
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    codebuff=client,
+                    settings=Settings(
+                        codebuff_token="token",
+                        local_api_key=None,
+                        debug=False,
+                    ),
+                )
+            )
+        )
+        run = FreebuffRun(
+            run_id="run-1",
+            agent_id="base2-free-deepseek-flash",
+            started_at="2026-05-23T00:00:00.000Z",
+        )
+
+        chunks = [
+            chunk.decode("utf-8")
+            async for chunk in _stream_openai_chunks(request, {}, run)
+        ]
+
+        # 未预期异常也要发 error + [DONE]，不允许连接裸断
+        error_payload = json.loads(chunks[-2].removeprefix("data: ").strip())
+        self.assertEqual(error_payload["error"]["code"], "codebuff_error")
+        self.assertEqual(chunks[-1], "data: [DONE]\n\n")
+
+    async def test_stream_retries_on_empty_stream(self) -> None:
+        client = EmptyThenOkStreamClient()
+        lease = _fake_lease_for(client)
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    codebuff=client,
+                    settings=Settings(
+                        codebuff_token="token",
+                        local_api_key=None,
+                        debug=False,
+                    ),
+                )
+            )
+        )
+        run = FreebuffRun(
+            run_id="run-1",
+            agent_id="base2-free-deepseek-flash",
+            started_at="2026-05-23T00:00:00.000Z",
+        )
+        payload = {
+            "model": "deepseek/deepseek-v4-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "codebuff_metadata": {"client_id": "c1", "freebuff_instance_id": "old"},
+        }
+
+        chunks = [
+            chunk.decode("utf-8")
+            async for chunk in _stream_openai_chunks(
+                request, payload, run, account_lease=lease
+            )
+        ]
+
+        # 空流 → 重建 session + 重试一次 → 客户端拿到正常内容 + [DONE]
+        self.assertEqual(client.chat_calls, 2)
+        self.assertEqual(chunks[-1], "data: [DONE]\n\n")
+        joined = "".join(chunks)
+        self.assertIn('"content":"ok"', joined)
 
 
 if __name__ == "__main__":

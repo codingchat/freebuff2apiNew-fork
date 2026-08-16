@@ -17,9 +17,16 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .codebuff import CodebuffAccountPool, CodebuffClient, CodebuffError
-from .config import DEFAULT_ADMIN_KEY, Settings, project_env_path, write_env_values
+from .config import (
+    DEFAULT_ADMIN_KEY,
+    Settings,
+    last_geo_info,
+    project_env_path,
+    refresh_geo,
+    write_env_values,
+)
 from .logging_config import get_buffered_logs
-from .models import ALL_MODELS, DEFAULT_MODEL, models_response
+from .models import ALL_MODELS, DEFAULT_MODEL, get_model_registry, models_response
 from .usage import ApiKeyRecord
 from .usage_store import ApiKeyStore, RequestStore
 
@@ -142,6 +149,9 @@ def _config_payload(settings: Settings, request: Request | None = None) -> dict[
         "proxy_has_auth": bool(settings.proxy_username),
         "base_url": settings.codebuff_api_url,
         "port": settings.port,
+        "timezone": settings.timezone,
+        "locale": settings.locale,
+        "os_name": settings.os_name,
     }
     if request is not None:
         payload["accounts"] = request.app.state.accounts.account_statuses()
@@ -311,7 +321,6 @@ async def _probe_url(client: httpx.AsyncClient, name: str, url: str) -> dict[str
         }
     except Exception as error:
         return {"name": name, "ok": False, "error": str(error)}
-    return response
 
 
 @router.post("/admin/api/logout")
@@ -345,6 +354,7 @@ async def overview(request: Request) -> dict[str, Any]:
         if accounts.rotation is not None
         else []
     )
+    registry = get_model_registry()
     return _api_ok(
         {
             "status": "ok",
@@ -355,6 +365,7 @@ async def overview(request: Request) -> dict[str, Any]:
             "debug": settings.debug,
             "log_level": settings.log_level,
             "model_availability": model_availability,
+            "model_registry": registry.status() if registry else {"loaded": False},
         }
     )
 
@@ -434,6 +445,88 @@ async def network(request: Request) -> dict[str, Any]:
             "proxy_enabled": settings.proxy_enabled,
             "proxy_display": f"{settings.proxy_type}://{settings.proxy_host}:{settings.proxy_port}" if settings.proxy_host else "",
         }
+    )
+
+
+# ── Geo / 设备指纹 ─────────────────────────────────────────────────────
+
+
+@router.get("/admin/api/geo")
+async def geo_status(request: Request) -> dict[str, Any]:
+    """Current device fingerprint (timezone/locale) + last detection result."""
+    _check_admin_auth(request)
+    settings = _settings(request)
+    detected = last_geo_info()
+    return _api_ok(
+        {
+            "timezone": settings.timezone,
+            "locale": settings.locale,
+            "os_name": settings.os_name,
+            "detected": detected or {"timezone": settings.timezone, "locale": settings.locale},
+        }
+    )
+
+
+@router.post("/admin/api/geo/refresh")
+async def geo_refresh(request: Request) -> dict[str, Any]:
+    """Re-detect server IP geo and apply timezone/locale to the live settings."""
+    _check_admin_auth(request)
+    settings = _settings(request)
+    try:
+        geo = await asyncio.to_thread(refresh_geo, settings)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=str(error))
+    return _api_ok(
+        {
+            "timezone": settings.timezone,
+            "locale": settings.locale,
+            "detected": geo,
+        },
+        "geo refreshed",
+    )
+
+
+# ── 动态模型注册表 ─────────────────────────────────────────────────────
+
+
+@router.get("/admin/api/model-registry")
+async def model_registry_status(request: Request) -> dict[str, Any]:
+    """Dynamic model registry status (official source mirror)."""
+    _check_admin_auth(request)
+    registry = get_model_registry()
+    return _api_ok(
+        registry.status() if registry else {"loaded": False},
+    )
+
+
+@router.post("/admin/api/model-registry/refresh")
+async def model_registry_refresh(request: Request) -> dict[str, Any]:
+    """Force a synchronous refresh of the dynamic model registry."""
+    _check_admin_auth(request)
+    registry = get_model_registry()
+    if registry is None:
+        raise HTTPException(status_code=503, detail="model registry not initialized")
+    try:
+        table = await asyncio.to_thread(registry.refresh_sync)
+    except Exception as error:
+        return _api_ok(
+            {
+                "ok": False,
+                "error": str(error),
+                "loaded": registry.table is not None,
+                "model_count": len(registry.table.models) if registry.table else 0,
+            },
+            "model registry refresh failed; hardcoded fallback active",
+        )
+    return _api_ok(
+        {
+            "ok": True,
+            "model_count": len(table.models),
+            "premium_count": len(table.premium_ids),
+            "glm_count": len(table.glm_ids),
+            "fetched_at": table.fetched_at,
+        },
+        "model registry refreshed",
     )
 
 
@@ -689,7 +782,7 @@ async def chat_test(request: Request) -> dict[str, Any]:
     messages = normalize_chat_messages([{"role": "user", "content": prompt}])
     lease = await request.app.state.accounts.acquire_session(model_config.session_id, messages)
     try:
-        await lease.client.validate_agents()
+        # 与 chat 主链路一致：不再调用 validate_agents()（旧 CLI 管理请求，缩小暴露面）。
         await lease.client.request_ad_chain(messages=messages)
         run = await _start_freebuff_run_chain(lease.client, model_config)
         payload = build_upstream_payload(

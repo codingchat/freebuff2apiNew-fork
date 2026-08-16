@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import ClientDisconnect
 
 from .admin import router as admin_router
 from .codebuff import (
@@ -80,6 +81,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="freebuff2api", version="0.1.0", lifespan=lifespan)
 app.include_router(admin_router)
+
+
+@app.exception_handler(ClientDisconnect)
+async def _handle_client_disconnect(request: Request, exc: ClientDisconnect) -> JSONResponse:
+    """客户端在请求体读完前断开（用户停止/网络中断）→ 静默结束，不打 ERROR 堆栈。
+
+    这是常态而非故障：request.json() 读到一半客户端断开会抛 ClientDisconnect，
+    若不加 handler 会在 uvicorn 层打出整段 traceback 干扰监控。客户端已断开，
+    响应实际送不出去，这里返回 499（Nginx 语义）仅作记录。
+    """
+    logger.info(
+        "client disconnected before request body complete path=%s",
+        request.url.path,
+    )
+    return JSONResponse(status_code=499, content={"error": {"message": "client closed connection", "type": "client_disconnect"}})
 
 
 def _settings(request: Request) -> Settings:
@@ -168,7 +184,59 @@ def _handle_upstream_error(request: Request, account_index: int | None, error: E
     if not isinstance(error, CodebuffError) or account_index is None:
         return
     accounts: CodebuffAccountPool = request.app.state.accounts
+    # 428 waiting_room_required：缓存 session 已失效（僵尸实例，上游 chat gate 不识别）。
+    # 清除该账号/模型的 session 缓存让下次请求重建，且不记入 failure/rotation，
+    # 避免账号被误判失效（对齐 Worker 1.7.0 stale-session 处理）。
+    if error.status_code == 428:
+        try:
+            account = accounts._accounts[account_index]
+            account.sessions._sessions.pop(model, None)
+        except Exception:
+            pass
+        logger.warning(
+            "session stale (428 waiting_room_required) account=%s model=%s; cache cleared",
+            account_index + 1,
+            model,
+        )
+        return
     accounts.handle_error(account_index, str(error), error.status_code, model)
+
+
+async def _recreate_session_and_run_for_retry(
+    account_lease: CodebuffAccountLease,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """空流恢复（对齐 pingmike2/freebuff2api-wokers v1.8.5 empty-stream recovery）：
+
+    上游 200 但返回空流（首 chunk 即 EOF，常见于免费通道长对话/额度脏状态）时，
+    删除上游 session → 重建同模型 session → 重新 START run → 重建 payload 重试一次。
+    只重建同模型，绝不改成别的模型（v1.8.5 明确语义）。失败返回 None 交由上层报错。
+    """
+    try:
+        account = account_lease._pool._accounts[account_lease._account_index]
+        client = account.client
+        sessions = account.sessions
+        model = payload.get("model") or ""
+        await client.delete_session(account_lease.session.instance_id)
+        sessions._sessions.clear()
+        new_session = await sessions.create_session(model)
+        sessions._sessions[model] = new_session
+        new_run = await _start_freebuff_run_chain(client, model)
+        client_id = (payload.get("codebuff_metadata") or {}).get("client_id") or ""
+        return build_upstream_payload(
+            payload,
+            session=new_session,
+            run_id=new_run.payload_run_id,
+            client_id=client_id,
+            trace_session_id=str(uuid.uuid4()),
+        )
+    except Exception as error:
+        logger.warning(
+            "empty stream retry failed model=%s: %s",
+            payload.get("model"),
+            error,
+        )
+        return None
 
 
 def _record_request(
@@ -274,7 +342,8 @@ async def chat_completions(request: Request) -> Any:
         )
         client = lease.client
         await client.request_ad_chain(messages=messages)
-        await client.validate_agents()
+        # 不再调用 validate_agents()：/api/agents/validate 是旧 CLI 的额外管理请求，
+        # Worker 1.7.0 桌面版协议不发送，去掉以缩小暴露面。
         run = await _start_freebuff_run_chain(client, model_config)
         trace_session_id = str(uuid.uuid4())
         payload = build_upstream_payload(
@@ -358,35 +427,65 @@ async def _stream_openai_chunks(
     message_id: str | None = None
     client = client or (account_lease.client if account_lease else _client(request))
     settings = _settings(request)
+    done_sent = False
+    chunk_yielded = False
+    retried = False
     try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
-            if data is None:
-                continue
-            if data == "[DONE]":
-                if settings.debug:
-                    logger.debug(
-                        "chat stream done run_id=%s message_id=%s",
-                        run.run_id,
-                        message_id,
-                    )
-                yield encode_sse("[DONE]")
-                break
+        while True:
+            try:
+                async for line in client.chat_events(payload):
+                    data = decode_sse_data(line)
+                    if data is None:
+                        continue
+                    if data == "[DONE]":
+                        if settings.debug:
+                            logger.debug(
+                                "chat stream done run_id=%s message_id=%s",
+                                run.run_id,
+                                message_id,
+                            )
+                        yield encode_sse("[DONE]")
+                        done_sent = True
+                        break
 
-            message_id = data.get("id") or message_id
-            chunk = sanitize_stream_chunk(data)
-            if chunk is not None:
-                if settings.debug:
-                    logger.debug(
-                        "chat stream chunk=%s",
-                        render_debug(chunk, settings.log_body_chars),
+                    message_id = data.get("id") or message_id
+                    chunk = sanitize_stream_chunk(data)
+                    if chunk is not None:
+                        if settings.debug:
+                            logger.debug(
+                                "chat stream chunk=%s",
+                                render_debug(chunk, settings.log_body_chars),
+                            )
+                        yield encode_sse(chunk)
+                        chunk_yielded = True
+                    elif settings.debug:
+                        logger.debug(
+                            "chat stream ignored data=%s",
+                            render_debug(data, settings.log_body_chars),
+                        )
+                break
+            except CodebuffError as error:
+                # 空流恢复（对齐 v1.8.5）：上游 200 但首 chunk 即 EOF → 删上游 session、
+                # 重建同模型 session + 重新 START run 后重试一次。仅在尚未发出任何内容
+                # chunk 时重试（已发内容无法回滚）。绝不改成别的模型。
+                if (
+                    not chunk_yielded
+                    and not retried
+                    and "empty stream" in str(error)
+                    and account_lease is not None
+                ):
+                    retried = True
+                    new_payload = await _recreate_session_and_run_for_retry(
+                        account_lease, payload
                     )
-                yield encode_sse(chunk)
-            elif settings.debug:
-                logger.debug(
-                    "chat stream ignored data=%s",
-                    render_debug(data, settings.log_body_chars),
-                )
+                    if new_payload is not None:
+                        payload = new_payload
+                        logger.warning(
+                            "empty stream detected; recreated session and retrying model=%s",
+                            payload.get("model"),
+                        )
+                        continue
+                raise
     except CodebuffError as error:
         if account_lease is not None:
             _handle_upstream_error(request, account_lease._account_index, error, payload.get("model", ""))
@@ -409,7 +508,35 @@ async def _stream_openai_chunks(
             }
         )
         yield encode_sse("[DONE]")
+        done_sent = True
+    except Exception as error:
+        # 兜底：任何未预期异常（上游断流/解析异常等）也发 error + [DONE]，
+        # 避免生成器裸抛导致连接直接关闭（客户端报 "terminated / other side closed"）。
+        if account_lease is not None:
+            _handle_upstream_error(request, account_lease._account_index, error, payload.get("model", ""))
+        logger.exception(
+            "chat stream unexpected error run_id=%s",
+            run.run_id,
+        )
+        if api_key:
+            duration_ms = int((time.time() - started) * 1000)
+            _record_request(request, api_key, payload.get("model", ""), duration_ms, "error", error=str(error))
+        yield encode_sse(
+            {
+                "error": {
+                    "message": str(error),
+                    "type": "upstream_error",
+                    "code": "codebuff_error",
+                }
+            }
+        )
+        yield encode_sse("[DONE]")
+        done_sent = True
     finally:
+        # 上游 EOF 但未发 [DONE]（免费通道长对话常见）→ 补发终止符，
+        # 否则客户端等 [DONE] 等到连接关闭报 "terminated"。
+        if not done_sent:
+            yield encode_sse("[DONE]")
         if api_key:
             duration_ms = int((time.time() - started) * 1000)
             _record_request(request, api_key, payload.get("model", ""), duration_ms, "success")
@@ -465,28 +592,15 @@ async def _start_freebuff_run_chain(
     if model.parent_agent_id:
         return await _start_child_chat_run_chain(client, model)
 
+    # 精简版（对齐 Worker 1.7.0 startRunChain）：只 START 主 run + context-pruner
+    # 子 run。chat 只校验 run_id 存在，recordRunStep/finishRun 可跳过——去掉这些
+    # 额外管理请求可缩小请求特征暴露面（旧 CLI 行为已被上游统计）。
     agent_id = model.agent_id
     started_at = utc_now_iso()
     run_id = await client.start_run(agent_id)
-    child_started_at = utc_now_iso()
     child_run_id = await client.start_run(
         CONTEXT_PRUNER_AGENT_ID,
         ancestor_run_ids=[run_id],
-    )
-    await client.record_run_step(
-        child_run_id,
-        step_number=1,
-        child_run_ids=[],
-        message_id=None,
-        start_time=child_started_at,
-    )
-    await client.finish_run(child_run_id, total_steps=2)
-    await client.record_run_step(
-        run_id,
-        step_number=1,
-        child_run_ids=[child_run_id],
-        message_id=None,
-        start_time=started_at,
     )
     return FreebuffRun(
         run_id=run_id,
@@ -552,51 +666,13 @@ async def _finalize_run_with_client(
     run: FreebuffRun,
     message_id: str | None,
 ) -> None:
-    try:
-        logger.debug(
-            "finalize run start run_id=%s message_id=%s started_at=%s",
-            run.run_id,
-            message_id,
-            run.started_at,
-        )
-        if run.chat_run_id and run.chat_run_id != run.run_id:
-            await client.record_run_step(
-                run.chat_run_id,
-                step_number=1,
-                child_run_ids=[],
-                message_id=message_id,
-                start_time=run.chat_started_at or run.started_at,
-            )
-            await client.finish_run(run.chat_run_id, total_steps=2)
-            await client.record_run_step(
-                run.run_id,
-                step_number=1,
-                child_run_ids=[run.chat_run_id],
-                message_id=None,
-                start_time=run.started_at,
-            )
-            await client.finish_run(run.run_id, total_steps=2)
-            logger.debug("finalize parent/child run done run_id=%s", run.run_id)
-            return
-
-        await client.record_run_step(
-            run.run_id,
-            step_number=2,
-            child_run_ids=[],
-            message_id=message_id,
-            start_time=run.started_at,
-        )
-        await client.finish_run(run.run_id, total_steps=3)
-        logger.debug("finalize run done run_id=%s", run.run_id)
-    except CodebuffError as error:
-        logger.warning(
-            "finalize run failed run_id=%s: %s",
-            run.run_id,
-            error,
-            exc_info=client.settings.debug,
-        )
-    except Exception:
-        logger.exception("finalize run failed run_id=%s", run.run_id)
+    # 精简版（对齐 Worker 1.7.0）：chat 只校验 run_id 存在，finalize 无需再打
+    # record_step / finish_run 管理请求。保留函数为向后兼容，函数体为空。
+    logger.debug(
+        "finalize run skipped (streamlined) run_id=%s message_id=%s",
+        run.run_id,
+        message_id,
+    )
 
 
 # ── Anthropic Messages API (/v1/messages) ─────────────────────────────
@@ -679,7 +755,7 @@ async def anthropic_messages(request: Request) -> Any:
         )
         client = lease.client
         await client.request_ad_chain()
-        await client.validate_agents()
+        # 同 OpenAI 路径：不再调用 validate_agents()，缩小暴露面。
         run = await _start_freebuff_run_chain(client, model_config)
         trace_session_id = str(uuid.uuid4())
         payload = build_anthropic_upstream_payload(
@@ -774,6 +850,8 @@ async def _stream_anthropic_events(
     settings = _settings(request)
     state = AnthropicStreamState(model=requested_model or payload.get("model", ""))
     _ping_active = True
+    finalized = False
+    retried = False
 
     async def _ping_loop() -> None:
         """Send ping every ~15 s to keep the connection alive across proxies."""
@@ -785,25 +863,60 @@ async def _stream_anthropic_events(
         except asyncio.CancelledError:
             pass
 
-    try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
-            if data is None:
-                continue
-            if data == "[DONE]":
-                # Emit final events.
-                for event_type, event_data in state.finalize_events():
-                    yield anthropic_sse_encode(event_type, event_data)
-                break
+    def _emit_finalize():
+        nonlocal finalized
+        if finalized:
+            return
+        finalized = True
+        for event_type, event_data in state.finalize_events():
+            yield anthropic_sse_encode(event_type, event_data)
 
-            for event_type, event_data in state.consume_chunk(data):
-                if settings.debug:
-                    logger.debug(
-                        "anthropic stream event=%s data=%s",
-                        event_type,
-                        render_debug(event_data, settings.log_body_chars),
+    try:
+        while True:
+            try:
+                async for line in client.chat_events(payload):
+                    data = decode_sse_data(line)
+                    if data is None:
+                        continue
+                    if data == "[DONE]":
+                        # Emit final events.
+                        for sse_line in _emit_finalize():
+                            yield sse_line
+                        break
+
+                    for event_type, event_data in state.consume_chunk(data):
+                        if settings.debug:
+                            logger.debug(
+                                "anthropic stream event=%s data=%s",
+                                event_type,
+                                render_debug(event_data, settings.log_body_chars),
+                            )
+                        yield anthropic_sse_encode(event_type, event_data)
+                break
+            except CodebuffError as error:
+                # 空流恢复（对齐 v1.8.5）：尚未发出任何事件时遇到空流 →
+                # 重建同模型 session + run 后重试一次。
+                if (
+                    finalized is False
+                    and not retried
+                    and "empty stream" in str(error)
+                    and account_lease is not None
+                ):
+                    retried = True
+                    new_payload = await _recreate_session_and_run_for_retry(
+                        account_lease, payload
                     )
-                yield anthropic_sse_encode(event_type, event_data)
+                    if new_payload is not None:
+                        payload = new_payload
+                        state = AnthropicStreamState(
+                            model=requested_model or payload.get("model", "")
+                        )
+                        logger.warning(
+                            "empty stream detected; recreated session and retrying model=%s",
+                            payload.get("model"),
+                        )
+                        continue
+                raise
     except CodebuffError as error:
         if account_lease is not None:
             _handle_upstream_error(request, account_lease._account_index, error, requested_model or payload.get("model", ""))
@@ -815,7 +928,25 @@ async def _stream_anthropic_events(
         )
         error_payload = anthropic_error_payload(str(error))
         yield anthropic_sse_encode("error", error_payload)
+        # 错误后也补 finalize（message_stop），保证 Anthropic 客户端能收尾
+        for sse_line in _emit_finalize():
+            yield sse_line
+    except Exception as error:
+        if account_lease is not None:
+            _handle_upstream_error(request, account_lease._account_index, error, requested_model or payload.get("model", ""))
+        logger.exception(
+            "anthropic stream unexpected error run_id=%s",
+            run.run_id,
+        )
+        error_payload = anthropic_error_payload(str(error))
+        yield anthropic_sse_encode("error", error_payload)
+        for sse_line in _emit_finalize():
+            yield sse_line
     finally:
+        # 上游 EOF 但未发 [DONE]（免费通道长对话常见）→ 补 finalize（message_stop），
+        # 否则 Anthropic 客户端悬挂/报 "terminated / other side closed"。
+        for sse_line in _emit_finalize():
+            yield sse_line
         if api_key:
             duration_ms = int((time.time() - started) * 1000)
             _record_request(request, api_key, payload.get("model", ""), duration_ms, "success")

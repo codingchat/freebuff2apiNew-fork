@@ -249,6 +249,8 @@ GET /v1/models
 Authorization: Bearer YOUR_API_KEY
 ```
 
+> 返回每个模型的 `context_window` / `max_output_tokens` / `input_modalities` / `output_modalities`(Anthropic Models API 兼容字段),Claude Code 等客户端据此自适应钳制上下文与输出上限,避免因 `max_tokens` 超上游免费层上限(32,768)导致空响应。
+
 #### Chat Completions
 
 ```http
@@ -426,8 +428,7 @@ freebuff2apiNew/
 │   ├── codebuff.py        # Freebuff 上游客户端
 │   ├── config.py          # 配置加载
 │   ├── models.py          # 模型定义
-│   ├── buffy_prompt.py    # 🐝 真实 Buffy system 提示词（上游校验必需）
-│   ├── openai_compat.py   # OpenAI 格式兼容层
+│   ├── openai_compat.py   # OpenAI 格式兼容层（注入官方 Buffy 前缀 + end_turn 签名）
 │   ├── anthropic_compat.py # Anthropic 格式兼容层
 │   ├── usage.py           # 数据模型
 │   ├── usage_store.py     # 存储层

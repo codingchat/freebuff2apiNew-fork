@@ -246,6 +246,27 @@ class OpenAICompatTests(unittest.TestCase):
         self.assertEqual(payload["provider"], {"data_collection": "deny"})
         self.assertEqual(payload["codebuff_metadata"]["cost_mode"], "free")
 
+    def test_build_upstream_payload_clamps_max_tokens(self) -> None:
+        payload = build_upstream_payload(
+            {
+                "model": "deepseek/deepseek-v4-flash",
+                "messages": [],
+                "max_tokens": 64000,
+                "max_completion_tokens": 100000,
+            },
+            session=FreebuffSession(
+                instance_id="instance-1",
+                model="deepseek/deepseek-v4-flash",
+            ),
+            run_id="run-1",
+            client_id="client-1",
+            trace_session_id="trace-1",
+        )
+
+        # 超模型上限 32768 → 钳制（chat completions 路径保留原字段名）
+        self.assertEqual(payload["max_tokens"], 32_768)
+        self.assertEqual(payload["max_completion_tokens"], 32_768)
+
     def test_accumulator_keeps_reasoning_content_separate(self) -> None:
         accumulator = CompletionAccumulator("deepseek/deepseek-v4-flash")
 
@@ -267,8 +288,11 @@ class OpenAICompatTests(unittest.TestCase):
         response = accumulator.final_response()
 
         message = response["choices"][0]["message"]
-        self.assertEqual(message["content"], "")
-        self.assertEqual(message["reasoning_content"], "hello")
+        # 对齐 Worker 1.7.2：上游只回 reasoning 未回 content 时，用 reasoning 兜底 content，
+        # 避免客户端收到空响应（reasoning_used_as_content 标记）。
+        self.assertEqual(message["content"], "hello")
+        self.assertTrue(message["reasoning_used_as_content"])
+        self.assertNotIn("reasoning_content", message)
 
     def test_accumulator_keeps_final_answer_as_content(self) -> None:
         accumulator = CompletionAccumulator("deepseek/deepseek-v4-flash")
