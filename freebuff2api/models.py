@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .config import DEFAULT_MAX_REQUEST_BODY_BYTES
 from .model_registry import DynamicModelEntry, ModelRegistry
 
 
@@ -317,7 +318,9 @@ def _model_entry(model: FreebuffModel) -> dict[str, object]:
         "type": "model",
         "display_name": model.id,
         "context_window": model.context_window,
+        "max_input_tokens": max(1, model.context_window - model.max_output_tokens),
         "max_output_tokens": model.max_output_tokens,
+        "max_request_bytes": DEFAULT_MAX_REQUEST_BODY_BYTES,
         "input_modalities": list(model.input_modalities),
         "output_modalities": list(model.output_modalities),
     }

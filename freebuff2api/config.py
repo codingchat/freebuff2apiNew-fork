@@ -22,6 +22,7 @@ HAR_BROWSER_USER_AGENT = (
 )
 
 DEFAULT_ADMIN_KEY = "sk-admin"
+DEFAULT_MAX_REQUEST_BODY_BYTES = 307_200  # 300 KB：过大请求直接 413，避免打崩上游
 
 # 默认兜底指纹必须是“干净的”：绝不回退到亚洲/中国时区。
 # 服务端会把设备时区/locale 用于地区访问层判定（limited access tier），
@@ -175,7 +176,7 @@ class Settings:
     max_request_records: int = 5000
     max_concurrency_per_account: int = 2  # premium 1 + unlimited 1 两条通道
     rotation_mode: str = "balanced"  # throughput | balanced | conservative
-    max_request_body_bytes: int = 307_200  # 300 KB：过大请求直接 413，避免打崩上游
+    max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES  # 300 KB：过大请求直接 413
 
     @property
     def codebuff_api_url(self) -> str:
@@ -282,7 +283,7 @@ def load_settings() -> Settings:
         max_request_records=_int("FREEBUFF_MAX_REQUEST_RECORDS", 5000),
         max_concurrency_per_account=_int("FREEBUFF_ACCOUNT_CONCURRENCY", 2),
         rotation_mode=os.getenv("FREEBUFF_ROTATION_MODE", "balanced"),
-        max_request_body_bytes=_int("FREEBUFF_MAX_REQUEST_BODY_BYTES", 307_200),
+        max_request_body_bytes=_int("FREEBUFF_MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_REQUEST_BODY_BYTES),
     )
 
 
