@@ -69,7 +69,8 @@
 - **429 按模型冷却**：限流按 `(账号, 模型)` 隔离，仅限流模型受影响，同账号其他模型继续可用；429 响应携带 `Retry-After` 头
 - **账号健康管理**：启动并发验证所有 Token（失效自动剔除）、连续瞬时故障 3 次标记失效、成功调用重置失败计数、冷却到期自动半开探测恢复
 - **概览页模型可用矩阵**：每个模型 × 每个 Token 的实时可用状态（可用/限流冷却/失效/验证中），悬停显示冷却倒计时
-- **每账号并发上限**：`FREEBUFF_ACCOUNT_CONCURRENCY` 控制单账号并发请求数（默认 1），超限账号自动跳过
+- **每账号并发上限**：`FREEBUFF_ACCOUNT_CONCURRENCY` 控制单账号并发通道数（默认 2 = premium 1 + unlimited 1），超限账号自动跳过
+- **账号轮换三模式**：`FREEBUFF_ROTATION_MODE` 可选 `throughput` / `balanced` / `conservative`，区分正常额度 429 与 ban，premium 被 ban 后停用到下一个北京时间 15:00
 - **轮询指针持久化**：当前账号写入 `.env` 的 `CURRENT_TOKENNum`，重启后续轮
 - **管理面板增强**：Token 页展示状态徽章/冷却倒计时/最近 429 详情，支持手动轮换、激活指定账号、重新校验全部账号
 
@@ -143,9 +144,19 @@ FREEBUFF_API_KEY=sk-your-api-key
 # 用于登录管理面板
 FREEBUFF_ADMIN_KEY=sk-admin
 
-# ⚙️ 每账号并发请求上限（可选，默认 1）
-# 1 = 每 Token 同时处理 1 个请求；调大可提高单账号吞吐
-FREEBUFF_ACCOUNT_CONCURRENCY=1
+# ⚙️ 每账号并发通道数（可选，默认 2）
+# 2 = premium 通道 1 + unlimited 通道 1
+FREEBUFF_ACCOUNT_CONCURRENCY=2
+
+# 🔁 账号轮换模式（可选，默认 balanced）
+# throughput   = 所有账号同时扇出，吞吐最大，风险最高
+# balanced     = free 扇出；premium 同时只用 1 个账号，正常额度耗尽才轮换
+# conservative = free 也只用第 1 个账号；premium 轮换同上
+FREEBUFF_ROTATION_MODE=balanced
+
+# 📦 请求体大小上限（可选，默认 307200 = 300KB）
+# 超过该大小直接 413，避免把上游打崩
+FREEBUFF_MAX_REQUEST_BODY_BYTES=307200
 ```
 
 > 💡 当前轮询账号由系统自动写入 `.env` 的 `CURRENT_TOKENNum`（无需手动配置），重启后从该账号继续轮换。
@@ -376,6 +387,9 @@ Content-Type: application/json
 | `FREEBUFF_PORT` | ❌ | `8000` | 监听端口 |
 | `FREEBUFF_API_KEYS` | ❌ | - | 多 API Key JSON 配置（替代单一 `FREEBUFF_API_KEY`） |
 | `FREEBUFF_MAX_REQUEST_RECORDS` | ❌ | `5000` | 请求记录内存保留上限 |
+| `FREEBUFF_ACCOUNT_CONCURRENCY` | ❌ | `2` | 每账号并发通道数（premium 1 + unlimited 1） |
+| `FREEBUFF_ROTATION_MODE` | ❌ | `balanced` | 账号轮换模式：`throughput` / `balanced` / `conservative` |
+| `FREEBUFF_MAX_REQUEST_BODY_BYTES` | ❌ | `307200` | 请求体大小上限（字节），超过返回 413 |
 | `FREEBUFF_SESSION_ID` | ❌ | 随机 | 上游会话 ID（通常自动生成，无需设置） |
 | `FREEBUFF_SYSTEM_PROMPT_OVERRIDE` | ❌ | - | 覆盖注入的 Buffy 系统提示词（追加在真实 Buffy 提示词之后） |
 | `FREEBUFF_AD_PROVIDERS` | ❌ | `gravity,carbon` | 广告提供商顺序（逗号分隔；上游现已不接受 `zeroclick`） |
