@@ -27,12 +27,32 @@ const levelColors: Record<string, string> = {
   CRITICAL: "bg-destructive text-destructive-foreground",
 }
 
+function LogMessage({ message }: { message: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const tooLong = message.length > 200
+  return (
+    <div className="min-w-0 flex-1 break-all">
+      <span>{expanded || !tooLong ? message : message.slice(0, 200) + "…"}</span>
+      {tooLong && (
+        <button
+          className="ml-1 shrink-0 text-primary hover:underline"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? "收起" : "展开"}
+        </button>
+      )}
+    </div>
+  )
+}
+
 export default function LogsPage() {
   const [level, setLevel] = useState<string>("")
   const [limit, setLimit] = useState(200)
   const [clearing, setClearing] = useState(false)
   const [query, setQuery] = useState("")
   const [category, setCategory] = useState("")
+  const [fromTime, setFromTime] = useState("")
+  const [toTime, setToTime] = useState("")
   const fetcher = useCallback(
     () => api.logs({ level: level || undefined, limit }),
     [level, limit],
@@ -42,6 +62,8 @@ export default function LogsPage() {
   const logsData: LogsData | null = data
   const rawItems: LogItem[] = logsData?.items || []
   const items: LogItem[] = rawItems.filter((log) => {
+    if (fromTime && log.time < fromTime.replace("T", " ")) return false
+    if (toTime && log.time > toTime.replace("T", " ")) return false
     if (query) {
       const q = query.toLowerCase()
       const haystack = `${log.time} ${log.level} [${log.logger}] ${log.message}`.toLowerCase()
@@ -102,6 +124,21 @@ export default function LogsPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Input
+            type="datetime-local"
+            step={1}
+            value={fromTime}
+            onChange={(e) => setFromTime(e.target.value)}
+            className="w-44 font-mono text-xs"
+          />
+          <span className="text-xs text-muted-foreground">至</span>
+          <Input
+            type="datetime-local"
+            step={1}
+            value={toTime}
+            onChange={(e) => setToTime(e.target.value)}
+            className="w-44 font-mono text-xs"
+          />
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -191,7 +228,7 @@ export default function LogsPage() {
                       [{log.logger}]
                     </span>
                   </div>
-                  <span className="min-w-0 break-all">{log.message}</span>
+                  <LogMessage message={log.message} />
                 </div>
               ))}
             </div>
