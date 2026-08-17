@@ -39,9 +39,18 @@ def is_rate_limit_error(error_message: str) -> bool:
 
 
 def is_ban_error(error_message: str) -> bool:
-    """Check if an error message indicates an account/network ban (not quota)."""
+    """Check if an error message indicates an account/network ban (not quota).
+
+    Policy Violation 是上游模型提供商（如 OpenAI/Azure）的问题，不一定是
+    Codebuff 账号被封，因此不归入 ban。
+    """
     lower = error_message.lower()
-    return "banned" in lower or "country_blocked" in lower or "policy violation" in lower
+    return "banned" in lower or "country_blocked" in lower
+
+
+def is_policy_violation_error(error_message: str) -> bool:
+    """OpenAI/Azure 上游策略违规：只封当前模型，不封账号。"""
+    return "policy violation" in error_message.lower()
 
 
 def next_beijing_1500_epoch(now: float | None = None) -> float:

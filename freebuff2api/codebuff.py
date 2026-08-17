@@ -23,6 +23,7 @@ from .token_rotation import (
     STATUS_INVALID,
     RotationState,
     is_ban_error,
+    is_policy_violation_error,
     is_rate_limit_error,
     next_beijing_1500_epoch,
     parse_429_info,
@@ -1265,6 +1266,19 @@ class CodebuffAccountPool:
                     "premium disabled until next 15:00 Asia/Shanghai (%s)",
                     self._premium_banned_until,
                 )
+            return
+
+        if is_policy_violation_error(message):
+            # 上游模型提供商策略违规（常见于 Luna/Azure）：只封当前模型到下一个 15:00，
+            # 不标记账号失效，其他 premium 模型继续可用。
+            until = max(0.0, next_beijing_1500_epoch() - time.time())
+            retry_ms = int(until * 1000)
+            self._rotation.block(index, retry_ms, model)
+            logger.warning(
+                "account %s model %s blocked until next 15:00 due to upstream policy violation",
+                index + 1,
+                model,
+            )
             return
 
         if status_code == 429 or is_rate_limit_error(message):
