@@ -159,7 +159,7 @@ class Settings:
     log_body_chars: int = 2000
     log_plaintext: bool = False
     log_color: bool = True
-    admin_log_lines: int = 500  # 内存日志保留上限，超出自动删除最旧记录
+    admin_log_lines: int = 1000  # 内存日志保留上限，超出自动删除最旧记录
     host: str = "0.0.0.0"
     port: int = 8000
     proxy_enabled: bool = False
@@ -270,7 +270,7 @@ def load_settings() -> Settings:
         log_body_chars=_int("FREEBUFF_LOG_BODY_CHARS", 0 if debug else 2000),
         log_plaintext=_bool("FREEBUFF_LOG_PLAINTEXT", False),
         log_color=_bool("FREEBUFF_LOG_COLOR", color_default),
-        admin_log_lines=_int("FREEBUFF_ADMIN_LOG_LINES", 500),
+        admin_log_lines=_int("FREEBUFF_ADMIN_LOG_LINES", 1000),
         host=os.getenv("FREEBUFF_HOST", "0.0.0.0"),
         port=_int("FREEBUFF_PORT", 8000),
         proxy_enabled=_bool("FREEBUFF_PROXY_ENABLED", False),

@@ -47,7 +47,7 @@ function LogMessage({ message }: { message: string }) {
 
 export default function LogsPage() {
   const [level, setLevel] = useState<string>("")
-  const [limit, setLimit] = useState(200)
+  const [limit, setLimit] = useState(500)
   const [clearing, setClearing] = useState(false)
   const [query, setQuery] = useState("")
   const [category, setCategory] = useState("")
@@ -76,7 +76,7 @@ export default function LogsPage() {
       if (category === "outbound" && !text.includes("[outbound]")) return false
     }
     return true
-  })
+  }).reverse()
 
   if (loading && !logsData) {
     return (
@@ -183,6 +183,7 @@ export default function LogsPage() {
               <SelectItem value="100">100</SelectItem>
               <SelectItem value="200">200</SelectItem>
               <SelectItem value="500">500</SelectItem>
+              <SelectItem value="1000">1000</SelectItem>
             </SelectContent>
           </Select>
           <Button size="sm" variant="outline" onClick={copyAll}>

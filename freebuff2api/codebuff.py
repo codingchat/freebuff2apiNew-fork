@@ -1003,7 +1003,7 @@ class CodebuffAccountPool:
                 session_lease = await account.sessions.acquire_session(model, messages)
             except CodebuffError as error:
                 await self.release(account_index, model)
-                if error.status_code == 429 or is_rate_limit_error(str(error)):
+                if is_rate_limit_error(str(error)):
                     raise
                 if error.status_code == 403 and "quota exhausted" in str(error):
                     account = self._accounts[account_index]
@@ -1338,7 +1338,7 @@ class CodebuffAccountPool:
             )
             return
 
-        if status_code == 429 or is_rate_limit_error(message):
+        if is_rate_limit_error(message):
             _, status = self._rotation.rotate(
                 reason="429",
                 error_message=message,
