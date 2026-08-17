@@ -559,6 +559,30 @@ async def request_limit_update(request: Request) -> dict[str, Any]:
         "persisted": not _is_vercel(),
     }, "request body limit updated")
 
+# ── 工具数上限 ─────────────────────────────────────────────────────
+@router.get("/admin/api/tool-limit")
+async def tool_limit_status(request: Request) -> dict[str, Any]:
+    """Current max tools per request."""
+    _check_admin_auth(request)
+    settings = _settings(request)
+    return _api_ok({"max_tools": settings.max_tools_per_request})
+
+@router.post("/admin/api/tool-limit")
+async def tool_limit_update(request: Request) -> dict[str, Any]:
+    """Update max tools per request at runtime and persist to .env."""
+    _check_admin_auth(request)
+    body = await request.json()
+    value = body.get("max_tools")
+    if not isinstance(value, int) or value <= 0:
+        raise HTTPException(status_code=400, detail="max_tools must be a positive integer")
+    old_settings = _settings(request)
+    new_settings = replace(old_settings, max_tools_per_request=value)
+    if not _is_vercel():
+        write_env_values({"FREEBUFF_MAX_TOOLS": str(value)})
+    _apply_env({"FREEBUFF_MAX_TOOLS": str(value)})
+    request.app.state.settings = new_settings
+    return _api_ok({"max_tools": value}, "tool limit updated")
+
 @router.get("/admin/api/model-registry")
 async def model_registry_status(request: Request) -> dict[str, Any]:
     """Dynamic model registry status (official source mirror)."""

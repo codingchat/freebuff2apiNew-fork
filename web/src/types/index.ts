@@ -77,6 +77,10 @@ export interface AccountStatus {
   last_429: Record<string, unknown>
 }
 
+export interface ToolLimitData {
+  max_tools: number
+}
+
 export interface RequestLimitData {
   max_request_body_bytes: number
   current_mb: number

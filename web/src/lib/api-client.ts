@@ -21,6 +21,7 @@ import type {
   ModelRegistryRefreshResult,
   RequestLimitData,
   RotationModeData,
+  ToolLimitData,
 } from "@/types"
 
 const API_BASE = "/admin/api"
@@ -151,6 +152,16 @@ export const api = {
     request<TokenVerifyResult>("/freebuff-tokens/verify", {
       method: "POST",
       body: JSON.stringify({ token }),
+    }),
+
+  // Tool limit
+  getToolLimit: () =>
+    request<ToolLimitData>("/tool-limit"),
+
+  setToolLimit: (maxTools: number) =>
+    request<ToolLimitData>("/tool-limit", {
+      method: "POST",
+      body: JSON.stringify({ max_tools: maxTools }),
     }),
 
   // Request body limit

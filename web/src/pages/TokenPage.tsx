@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react"
-import type { RequestLimitData, RotationModeData } from "@/types"
+import type { RequestLimitData, RotationModeData, ToolLimitData } from "@/types"
 import { api } from "@/lib/api-client"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -107,20 +107,21 @@ function RequestLimitCard() {
     try {
       const data = await api.getRequestLimit()
       setLimitData(data)
-      setInputValue(String(data.max_request_body_bytes))
+      setInputValue(String(data.current_mb))
     } catch {}
   }, [])
 
   useEffect(() => { fetchLimit() }, [fetchLimit])
 
   const saveLimit = useCallback(async () => {
-    const bytes = Number(inputValue)
-    if (!Number.isFinite(bytes) || bytes <= 0) return
+    const mb = Number(inputValue)
+    if (!Number.isFinite(mb) || mb <= 0) return
+    const bytes = Math.round(mb * 1048576)
     setSaving(true)
     try {
       const data = await api.setRequestLimit(bytes)
       setLimitData(data)
-      setInputValue(String(data.max_request_body_bytes))
+      setInputValue(String(data.current_mb))
     } catch {}
     setSaving(false)
   }, [inputValue])
@@ -143,7 +144,7 @@ function RequestLimitCard() {
             step={1024}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="字节数，例如 2097152"
+            placeholder="MB，例如 2 或 2.5"
             className="flex-1 font-mono text-sm"
           />
           <Button size="sm" onClick={saveLimit} disabled={saving}>
@@ -151,7 +152,67 @@ function RequestLimitCard() {
           </Button>
         </div>
         <p className="text-[11px] text-muted-foreground">
-          默认 2097152 字节（2 MB）。调大可能让上游崩溃，调小可能拦截正常大上下文。
+          默认 2 MB。调大可能让上游崩溃，调小可能拦截正常大上下文。
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function ToolLimitCard() {
+  const [limitData, setLimitData] = useState<ToolLimitData | null>(null)
+  const [inputValue, setInputValue] = useState("")
+  const [saving, setSaving] = useState(false)
+
+  const fetchLimit = useCallback(async () => {
+    try {
+      const data = await api.getToolLimit()
+      setLimitData(data)
+      setInputValue(String(data.max_tools))
+    } catch {}
+  }, [])
+
+  useEffect(() => { fetchLimit() }, [fetchLimit])
+
+  const saveLimit = useCallback(async () => {
+    const maxTools = Number(inputValue)
+    if (!Number.isInteger(maxTools) || maxTools <= 0) return
+    setSaving(true)
+    try {
+      const data = await api.setToolLimit(maxTools)
+      setLimitData(data)
+      setInputValue(String(data.max_tools))
+    } catch {}
+    setSaving(false)
+  }, [inputValue])
+
+  return (
+    <Card className="border-border/60 shadow-sm">
+      <CardContent className="flex flex-col gap-3 p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium">工具数量上限</span>
+          {limitData ? (
+            <span className="text-xs text-muted-foreground">
+              当前 {limitData.max_tools} 个
+            </span>
+          ) : null}
+        </div>
+        <div className="flex gap-2">
+          <Input
+            type="number"
+            min={1}
+            step={1}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder="默认 50"
+            className="flex-1 font-mono text-sm"
+          />
+          <Button size="sm" onClick={saveLimit} disabled={saving}>
+            {saving ? "保存中..." : "保存"}
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          官方桌面端约 40 个工具。过多 MCP 工具会被上游判定外来客户端，超过上限时只保留前 N 个。
         </p>
       </CardContent>
     </Card>
@@ -324,6 +385,7 @@ export default function TokenPage() {
 
       <RotationModeCard />
       <RequestLimitCard />
+      <ToolLimitCard />
 
       {rotation?.all_blocked && (
         <Alert variant="destructive">
