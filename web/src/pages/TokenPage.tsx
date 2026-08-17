@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react"
-import type { RotationModeData } from "@/types"
+import type { RequestLimitData, RotationModeData } from "@/types"
 import { api } from "@/lib/api-client"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -92,6 +92,66 @@ function RotationModeCard() {
         </div>
         <p className="text-[11px] text-muted-foreground">
           {options.find((o) => o.value === current)?.desc || "选择轮换策略"}
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function RequestLimitCard() {
+  const [limitData, setLimitData] = useState<RequestLimitData | null>(null)
+  const [inputValue, setInputValue] = useState("")
+  const [saving, setSaving] = useState(false)
+
+  const fetchLimit = useCallback(async () => {
+    try {
+      const data = await api.getRequestLimit()
+      setLimitData(data)
+      setInputValue(String(data.max_request_body_bytes))
+    } catch {}
+  }, [])
+
+  useEffect(() => { fetchLimit() }, [fetchLimit])
+
+  const saveLimit = useCallback(async () => {
+    const bytes = Number(inputValue)
+    if (!Number.isFinite(bytes) || bytes <= 0) return
+    setSaving(true)
+    try {
+      const data = await api.setRequestLimit(bytes)
+      setLimitData(data)
+      setInputValue(String(data.max_request_body_bytes))
+    } catch {}
+    setSaving(false)
+  }, [inputValue])
+
+  return (
+    <Card className="border-border/60 shadow-sm">
+      <CardContent className="flex flex-col gap-3 p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium">请求体大小限制</span>
+          {limitData ? (
+            <span className="text-xs text-muted-foreground">
+              当前 {limitData.current_mb} MB
+            </span>
+          ) : null}
+        </div>
+        <div className="flex gap-2">
+          <Input
+            type="number"
+            min={1}
+            step={1024}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder="字节数，例如 2097152"
+            className="flex-1 font-mono text-sm"
+          />
+          <Button size="sm" onClick={saveLimit} disabled={saving}>
+            {saving ? "保存中..." : "保存"}
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          默认 2097152 字节（2 MB）。调大可能让上游崩溃，调小可能拦截正常大上下文。
         </p>
       </CardContent>
     </Card>
@@ -263,6 +323,7 @@ export default function TokenPage() {
       </div>
 
       <RotationModeCard />
+      <RequestLimitCard />
 
       {rotation?.all_blocked && (
         <Alert variant="destructive">

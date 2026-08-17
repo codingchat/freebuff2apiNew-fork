@@ -19,6 +19,7 @@ import type {
   GeoRefreshResult,
   ModelRegistryStatus,
   ModelRegistryRefreshResult,
+  RequestLimitData,
   RotationModeData,
 } from "@/types"
 
@@ -150,6 +151,16 @@ export const api = {
     request<TokenVerifyResult>("/freebuff-tokens/verify", {
       method: "POST",
       body: JSON.stringify({ token }),
+    }),
+
+  // Request body limit
+  getRequestLimit: () =>
+    request<RequestLimitData>("/request-limit"),
+
+  setRequestLimit: (maxRequestBodyBytes: number) =>
+    request<RequestLimitData>("/request-limit", {
+      method: "POST",
+      body: JSON.stringify({ max_request_body_bytes: maxRequestBodyBytes }),
     }),
 
   // Rotation mode

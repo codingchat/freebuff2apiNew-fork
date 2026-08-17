@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from .codebuff import CodebuffAccountPool, CodebuffClient, CodebuffError
 from .config import (
     DEFAULT_ADMIN_KEY,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
     Settings,
     last_geo_info,
     project_env_path,
@@ -525,6 +526,38 @@ async def rotation_mode_switch(request: Request) -> dict[str, Any]:
     accounts.rotation_mode = mode
     logger.info("rotation mode switched to %s", mode)
     return _api_ok({"mode": mode, "message": f"Rotation mode switched to {mode}"})
+
+# ── 请求体大小限制 ─────────────────────────────────────────────────
+@router.get("/admin/api/request-limit")
+async def request_limit_status(request: Request) -> dict[str, Any]:
+    """Current request body size limit (bytes)."""
+    _check_admin_auth(request)
+    settings = _settings(request)
+    return _api_ok({
+        "max_request_body_bytes": settings.max_request_body_bytes,
+        "current_mb": round(settings.max_request_body_bytes / 1048576, 2),
+        "default_bytes": DEFAULT_MAX_REQUEST_BODY_BYTES,
+    })
+
+@router.post("/admin/api/request-limit")
+async def request_limit_update(request: Request) -> dict[str, Any]:
+    """Update request body size limit at runtime and persist to .env."""
+    _check_admin_auth(request)
+    body = await request.json()
+    value = body.get("max_request_body_bytes")
+    if not isinstance(value, int) or value <= 0:
+        raise HTTPException(status_code=400, detail="max_request_body_bytes must be a positive integer")
+    old_settings = _settings(request)
+    new_settings = replace(old_settings, max_request_body_bytes=value)
+    if not _is_vercel():
+        write_env_values({"FREEBUFF_MAX_REQUEST_BODY_BYTES": str(value)})
+    _apply_env({"FREEBUFF_MAX_REQUEST_BODY_BYTES": str(value)})
+    request.app.state.settings = new_settings
+    return _api_ok({
+        "max_request_body_bytes": value,
+        "current_mb": round(value / 1048576, 2),
+        "persisted": not _is_vercel(),
+    }, "request body limit updated")
 
 @router.get("/admin/api/model-registry")
 async def model_registry_status(request: Request) -> dict[str, Any]:

@@ -77,6 +77,12 @@ export interface AccountStatus {
   last_429: Record<string, unknown>
 }
 
+export interface RequestLimitData {
+  max_request_body_bytes: number
+  current_mb: number
+  default_bytes: number
+}
+
 export interface RotationModeData {
   mode: string
   premium_banned_until: number
