@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 import re
 import threading
 import time
@@ -34,6 +36,7 @@ SOURCES: dict[str, list[str]] = {
 
 REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
 FETCH_TIMEOUT_SECONDS = 10.0
+SNAPSHOT_PATH = Path(__file__).parent / "model_registry_snapshot.json"
 
 _MODEL_ID_CONST_RE = re.compile(
     r"export\s+const\s+([A-Z0-9_]+)\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([A-Za-z0-9_.]+))"
@@ -84,6 +87,16 @@ class ModelRegistry:
         self._table: DynamicModelTable | None = None
         self._last_error: str | None = None
         self._lock = threading.Lock()
+        # 先从本地快照恢复，避免启动时网络不可用导致动态表完全不可用。
+        # 后台刷新成功后会用最新数据覆盖快照。
+        snapshot = self._load_snapshot()
+        if snapshot is not None:
+            self._table = snapshot
+            logger.info(
+                "model registry loaded from local snapshot models=%s fetched_at=%s",
+                len(snapshot.models),
+                snapshot.fetched_at,
+            )
 
     @property
     def table(self) -> DynamicModelTable | None:
@@ -200,10 +213,65 @@ class ModelRegistry:
             glm_ids=pools["glm"],
         )
 
+    def _table_to_dict(self, table: DynamicModelTable) -> dict[str, Any]:
+        return {
+            "fetched_at": table.fetched_at,
+            "models": [
+                {
+                    "id": model.id,
+                    "agent_id": model.agent_id,
+                    "base3_agent_id": model.base3_agent_id,
+                    "reviewer_agent_id": model.reviewer_agent_id,
+                }
+                for model in table.models
+            ],
+            "premium_ids": sorted(table.premium_ids),
+            "glm_ids": sorted(table.glm_ids),
+        }
+
+    def _table_from_dict(self, data: dict[str, Any]) -> DynamicModelTable:
+        return DynamicModelTable(
+            models=[
+                DynamicModelEntry(
+                    id=item["id"],
+                    agent_id=item["agent_id"],
+                    base3_agent_id=item.get("base3_agent_id"),
+                    reviewer_agent_id=item.get("reviewer_agent_id"),
+                )
+                for item in data.get("models", [])
+            ],
+            premium_ids=set(data.get("premium_ids", [])),
+            glm_ids=set(data.get("glm_ids", [])),
+            fetched_at=float(data.get("fetched_at") or time.time()),
+        )
+
+    def _save_snapshot(self, table: DynamicModelTable) -> None:
+        try:
+            SNAPSHOT_PATH.write_text(
+                json.dumps(self._table_to_dict(table), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as error:
+            logger.debug("could not save model registry snapshot: %s", error)
+
+    def _load_snapshot(self) -> DynamicModelTable | None:
+        if not SNAPSHOT_PATH.exists():
+            return None
+        try:
+            data = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
+            table = self._table_from_dict(data)
+            if not table.models:
+                return None
+            return table
+        except Exception as error:
+            logger.warning("could not load model registry snapshot: %s", error)
+            return None
+
     def _apply_table(self, table: DynamicModelTable) -> None:
         with self._lock:
             self._table = table
             self._last_error = None
+        self._save_snapshot(table)
         logger.info(
             "dynamic model registry refreshed models=%s premium=%s glm=%s",
             len(table.models),
