@@ -179,6 +179,8 @@ def _friendly_upstream_message(error: Exception) -> str:
         )
     elif "country_blocked" in lower or "banned" in lower:
         hint = "上游判定当前账号或出口地区受限：请更换美国出口节点，或更换账号。"
+    elif "provider usage" in lower or "refill" in lower:
+        hint = "Freebuff 官方上游 credit 耗尽，这是官方的问题，不是你的账号。请稍后重试。"
     elif "429" in original or "rate" in lower or "capacity" in lower:
         hint = "上游限流/容量已满：请稍后重试，或切换到其他模型/账号。"
     elif "waiting_room_required" in lower or "428" in original:

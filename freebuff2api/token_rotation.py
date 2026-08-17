@@ -53,6 +53,19 @@ def is_policy_violation_error(error_message: str) -> bool:
     return "policy violation" in error_message.lower()
 
 
+def is_provider_usage_error(error_message: str) -> bool:
+    """Freebuff 官方上游 credit 耗尽（不是账号问题，是官方的问题）。
+
+    官方 orchestrator.js 定义：
+    FREEBUFF_PROVIDER_USAGE_ERROR_PATTERN = /\b(?:(?:not enough|insufficient|out of)\\s+credits?
+        |(?:add|refill|top up)\\s+(?:more\\s+)?credits?)\\b/i
+    FREEBUFF_PROVIDER_USAGE_MESSAGE = "Freebuff ran out of provider usage and
+        needs a refill. This is on us, not your account."
+    """
+    lower = error_message.lower()
+    return "provider usage" in lower or "refill" in lower or "out of credits" in lower
+
+
 def next_beijing_1500_epoch(now: float | None = None) -> float:
     """Return the next 15:00 Asia/Shanghai time as epoch seconds.
 

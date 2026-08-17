@@ -24,6 +24,7 @@ from .token_rotation import (
     RotationState,
     is_ban_error,
     is_policy_violation_error,
+    is_provider_usage_error,
     is_rate_limit_error,
     next_beijing_1500_epoch,
     parse_429_info,
@@ -1325,6 +1326,13 @@ class CodebuffAccountPool:
                 )
             return
 
+        if is_provider_usage_error(message):
+            logger.warning(
+                "account %s provider usage exhausted (not account-specific); retrying",
+                index + 1,
+            )
+            return
+
         if is_policy_violation_error(message):
             # 上游模型提供商策略违规（常见于 Luna/Azure）：只封当前模型到下一个 15:00，
             # 不标记账号失效，其他 premium 模型继续可用。
@@ -1569,6 +1577,13 @@ def _upstream_error(
         return CodebuffError(
             f"{prefix}: 429 {text}",
             429,
+        )
+
+    if response.status_code == 402 or is_provider_usage_error(text):
+        return CodebuffError(
+            "Freebuff ran out of provider usage and needs a refill. "
+            "This is on us, not your account. (upstream: " + text[:200] + ")",
+            402,
         )
 
     return CodebuffError(
