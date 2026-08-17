@@ -281,7 +281,6 @@ def load_settings() -> Settings:
         system_prompt_override=os.getenv("FREEBUFF_SYSTEM_PROMPT_OVERRIDE"),
         api_keys_json=os.getenv("FREEBUFF_API_KEYS"),
         max_request_records=_int("FREEBUFF_MAX_REQUEST_RECORDS", 5000),
-        max_concurrency_per_account=_int("FREEBUFF_ACCOUNT_CONCURRENCY", 2),
         rotation_mode=os.getenv("FREEBUFF_ROTATION_MODE", "conservative"),
         max_request_body_bytes=_int("FREEBUFF_MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_REQUEST_BODY_BYTES),
     )

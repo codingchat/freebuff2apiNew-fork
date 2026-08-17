@@ -47,6 +47,23 @@
 
 ## 📝 更新日志
 
+### v4.0.0（2026-08-17）— 🔄 三模式账号轮换 + 请求体保护 + 0.0.63 协议对齐
+
+**新增**：
+
+- **账号轮换三模式 UI**：Token 管理页三态开关（并发/半并发/串行），默认串行；切换即时生效，无需重启
+- **请求体大小限制 UI**：Token 管理页可设置 `FREEBUFF_MAX_REQUEST_BODY_BYTES`，默认 2 MB；超限返回 413 并写入日志
+- **日志增强**：运行日志页新增搜索框和分类筛选（客户端请求/入站请求/出站请求）；日志时间改为北京时间；413 拒绝会写入日志
+- **模型映射本地快照**：动态模型注册表成功拉取后保存 `model_registry_snapshot.json`；GitHub/jsDelivr 不可用时从快照恢复，最后硬编码兜底
+- **0.0.63 协议对齐**：session 请求带 `x-freebuff-multi-session`；chat 移除旧版 `x-freebuff-instance-id` 头；`codebuff_metadata` 增加 `freebuff_multi_session`；`reasoning_effort` 移入 `freebuff_reasoning_effort`
+- **空流友好报错**：上游空流重试一次后仍失败，返回中文解释 + 原始错误，不再返回空响应
+
+**移除**：
+
+- **移除 `FREEBUFF_ACCOUNT_CONCURRENCY` 环境变量**：旧的每账号并发数字配置已由 `FREEBUFF_ROTATION_MODE` 三模式替代，内部固定为 premium 1 + unlimited 1 双通道
+
+**验证**：全量测试 169 passed；前端 Vite 构建通过；动态模型注册表本地快照生成成功。
+
 ### v0.3.0（2026-08-02）— 📱 管理面板移动端适配
 
 **新增**：
@@ -69,8 +86,7 @@
 - **429 按模型冷却**：限流按 `(账号, 模型)` 隔离，仅限流模型受影响，同账号其他模型继续可用；429 响应携带 `Retry-After` 头
 - **账号健康管理**：启动并发验证所有 Token（失效自动剔除）、连续瞬时故障 3 次标记失效、成功调用重置失败计数、冷却到期自动半开探测恢复
 - **概览页模型可用矩阵**：每个模型 × 每个 Token 的实时可用状态（可用/限流冷却/失效/验证中），悬停显示冷却倒计时
-- **每账号并发上限**：`FREEBUFF_ACCOUNT_CONCURRENCY` 控制单账号并发通道数（默认 2 = premium 1 + unlimited 1），超限账号自动跳过
-- **账号轮换三模式**：`FREEBUFF_ROTATION_MODE` 可选 `throughput` / `balanced` / `conservative`，区分正常额度 429 与 ban，premium 被 ban 后停用到下一个北京时间 15:00
+- **账号轮换三模式**：Token 管理页三态切换（并发/半并发/串行），默认串行；区分正常额度 429 与 ban，premium 被 ban 后停用到下一个北京时间 15:00
 - **轮询指针持久化**：当前账号写入 `.env` 的 `CURRENT_TOKENNum`，重启后续轮
 - **管理面板增强**：Token 页展示状态徽章/冷却倒计时/最近 429 详情，支持手动轮换、激活指定账号、重新校验全部账号
 
@@ -143,10 +159,6 @@ FREEBUFF_API_KEY=sk-your-api-key
 # 🛡️ 管理员密钥（必填）
 # 用于登录管理面板
 FREEBUFF_ADMIN_KEY=sk-admin
-
-# ⚙️ 每账号并发通道数（可选，默认 2）
-# 2 = premium 通道 1 + unlimited 通道 1
-FREEBUFF_ACCOUNT_CONCURRENCY=2
 
 # 🔁 账号轮换模式（可选，默认 balanced）
 # throughput   = 所有账号同时扇出，吞吐最大，风险最高
@@ -387,8 +399,7 @@ Content-Type: application/json
 | `FREEBUFF_PORT` | ❌ | `8000` | 监听端口 |
 | `FREEBUFF_API_KEYS` | ❌ | - | 多 API Key JSON 配置（替代单一 `FREEBUFF_API_KEY`） |
 | `FREEBUFF_MAX_REQUEST_RECORDS` | ❌ | `5000` | 请求记录内存保留上限 |
-| `FREEBUFF_ACCOUNT_CONCURRENCY` | ❌ | `2` | 每账号并发通道数（premium 1 + unlimited 1） |
-| `FREEBUFF_ROTATION_MODE` | ❌ | `balanced` | 账号轮换模式：`throughput` / `balanced` / `conservative` |
+| `FREEBUFF_ROTATION_MODE` | ❌ | `conservative` | 账号轮换模式：`throughput` / `balanced` / `conservative` |
 | `FREEBUFF_MAX_REQUEST_BODY_BYTES` | ❌ | `2097152` | 请求体大小上限（字节，默认 2 MB），超过返回 413 |
 | `FREEBUFF_SESSION_ID` | ❌ | 随机 | 上游会话 ID（通常自动生成，无需设置） |
 | `FREEBUFF_SYSTEM_PROMPT_OVERRIDE` | ❌ | - | 覆盖注入的 Buffy 系统提示词（追加在真实 Buffy 提示词之后） |
