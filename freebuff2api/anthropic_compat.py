@@ -335,6 +335,7 @@ def build_anthropic_upstream_payload(
     top_k: int | None = None,
     system_prompt: str | None = None,
     max_tools: int | None = None,
+    llm_step_number: str | None = None,
 ) -> dict[str, Any]:
     """Build the upstream OpenAI-style payload from an Anthropic request body."""
     # Resolve model.
@@ -425,6 +426,8 @@ def build_anthropic_upstream_payload(
     }
     if reasoning_effort is not None:
         metadata["freebuff_reasoning_effort"] = reasoning_effort
+    if llm_step_number is not None:
+        metadata["llm_step_number"] = llm_step_number
     payload["codebuff_metadata"] = metadata
     return payload
 

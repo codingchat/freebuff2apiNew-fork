@@ -437,6 +437,7 @@ async def chat_completions(request: Request) -> Any:
             upstream_model_id=model_config.upstream_id,
             system_prompt=settings.system_prompt_override,
             max_tools=settings.max_tools_per_request,
+            llm_step_number=_next_llm_step_number(run.payload_run_id),
         )
         if settings.debug:
             logger.debug(
@@ -698,6 +699,14 @@ async def _collect_completion(
 # 可跨请求复用，10 分钟缓存省掉每次请求 2 次 agent-runs 调用。
 _RUN_CACHE_TTL_SECONDS = 10 * 60
 _run_cache: dict[str, tuple[float, FreebuffRun]] = {}
+_run_step_counters: dict[str, int] = {}
+
+
+def _next_llm_step_number(run_id: str) -> str:
+    """每个 run 内部按调用次数递增 llm_step_number（官方桌面端行为）。"""
+    count = _run_step_counters.get(run_id, 0) + 1
+    _run_step_counters[run_id] = count
+    return str(count)
 
 
 def _cached_run(key: str) -> FreebuffRun | None:
@@ -960,6 +969,7 @@ async def anthropic_messages(request: Request) -> Any:
             upstream_model_id=model_config.upstream_id,
             system_prompt=settings.system_prompt_override,
             max_tools=settings.max_tools_per_request,
+            llm_step_number=_next_llm_step_number(run.payload_run_id),
         )
         if settings.debug:
             logger.debug(

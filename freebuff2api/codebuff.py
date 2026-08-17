@@ -38,7 +38,7 @@ CODEBUFF_ACCEPT_ENCODING = "gzip, deflate"
 # 免费层模型（表现为空响应/429），并做账号级统计（终态封禁）。
 # - JSON 请求不再手动设置 User-Agent（httpx 默认），消除 CLI 运行时特征
 # - chat 请求使用官方 SDK 版本号签名（桌面版同款）
-CHAT_COMPLETIONS_USER_AGENT = "ai-sdk/openai-compatible/3.0.20/codebuff"
+CHAT_COMPLETIONS_USER_AGENT = "ai-sdk/openai-compatible/0.0.0-test/codebuff ai-sdk/provider-utils/3.0.25 runtime/bun/1.3.14"
 
 # 广告/streak 链节流（对齐 worker.js runNormalClientBehavior：每账号 30 分钟一次）。
 AD_CHAIN_THROTTLE_SECONDS = 30 * 60

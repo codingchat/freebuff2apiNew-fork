@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from datetime import date
 from typing import Any
 
 from .codebuff import CodebuffError, FreebuffSession
@@ -11,12 +12,30 @@ logger = logging.getLogger("freebuff2api.openai_compat")
 from .models import normalize_reasoning_effort, resolve_model
 
 
-# 官方 free-mode marker（对齐 pingmike2/freebuff2api-wokers 1.7.0 / Worker normalizeMessages）：
-# 服务端 hasFreebuffRootSystemPromptOpening 对 system 开头做字节级校验，旧 `[System
-# Override...]` 前缀绕过已被修补（403 free_mode_cli_required）。只要求字节级开头，
-# 不需要完整 CLI 模板——完整模板反而携带逆向痕迹（抓包/提取脚本/补丁二进制等），
-# 是风控暴露面。这里与 Worker 1.7.0 一致，只注入极简前缀。
-BUFFY_PREFIX = "You are Buffy, the strategic coding assistant."
+# 官方 free-mode marker（0.0.63 桌面版抓包确认）：system 必须以官方 Buffy 编码 agent
+# 开头，否则服务端 hasFreebuffRootSystemPromptOpening 字节级校验失败（403
+# free_mode_cli_required）。这里只注入官方开头段落 + 当前日期，不再使用旧 Worker 的
+# strategic coding assistant 极简前缀（已与 0.0.63 桌面版不一致）。
+def _buffy_system_prompt() -> str:
+    today = date.today().strftime("%B %d, %Y")
+    return (
+        "You are Buffy, the coding agent behind Codebuff. "
+        "You help users with software engineering tasks: fixing bugs, "
+        "adding functionality, refactoring, and explaining code.\n\n"
+        f"Current date: {today}.\n\n"
+        "- Match the project's existing conventions. "
+        "Verify a library is already used in the project before employing it.\n"
+        "- Prefer editing existing files over creating new ones. "
+        "Make the fewest changes that address the request.\n"
+        "- Verify non-trivial changes by running the project's typecheck and relevant tests.\n"
+        "- Use write_todos to plan and track multi-step tasks.\n"
+        "- Your responses are displayed in a terminal. Keep them short and concise.\n"
+        "- Don't run destructive or hard-to-undo commands (git push, resets, deploys) "
+        "unless the user asks for them."
+    )
+
+
+BUFFY_PREFIX = _buffy_system_prompt()
 
 
 _UPSTREAM_CHAT_KEYS = frozenset(
@@ -194,6 +213,7 @@ def build_upstream_payload(
     upstream_model_id: str | None = None,
     system_prompt: str | None = None,
     max_tools: int | None = None,
+    llm_step_number: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         key: body[key]
@@ -245,6 +265,8 @@ def build_upstream_payload(
     }
     if reasoning_effort is not None:
         metadata["freebuff_reasoning_effort"] = reasoning_effort
+    if llm_step_number is not None:
+        metadata["llm_step_number"] = llm_step_number
     payload["codebuff_metadata"] = metadata
     return payload
 
