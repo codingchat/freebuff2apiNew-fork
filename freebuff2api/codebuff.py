@@ -76,9 +76,7 @@ class FreebuffSession:
 
     @property
     def is_fresh(self) -> bool:
-        # 剩余不足 10 分钟的 session 不再复用，避免长任务中途过期。
-        # 官方客户端同样会因 session 到期而中断长任务，中转层通过提前换新来规避。
-        return self.remaining_ms is None or self.remaining_ms > 600_000
+        return self.remaining_ms is None or self.remaining_ms > 60_000
 
 
 @dataclass
