@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -258,17 +259,39 @@ class CodebuffClient:
         # 桌面版签名（对齐 Worker 1.7.0）：客户端预生成 instance-id，服务端据此绑定会话，
         # 避免旧版"服务端分配实例"特征被 detectForeignFreebuffClient 标记。
         instance_id = str(uuid.uuid4())
-        data = await self._json(
-            "POST",
-            "/api/v1/freebuff/session",
-            headers=self._headers(
-                extra={
-                    "x-freebuff-model": model,
-                    "x-freebuff-instance-id": instance_id,
-                    "x-freebuff-multi-session": "1",
-                }
-            ),
+        headers = self._headers(
+            extra={
+                "x-freebuff-model": model,
+                "x-freebuff-instance-id": instance_id,
+                "x-freebuff-multi-session": "1",
+            }
         )
+        try:
+            data = await self._json(
+                "POST",
+                "/api/v1/freebuff/session",
+                headers=headers,
+            )
+        except CodebuffError as error:
+            # 旧的同 bucket 会话仍占着 premium 槽（例如服务重启后本地缓存丢失）。
+            # 官方桌面版支持 x-freebuff-takeover-instance-id 抢占，但反代里更安全的
+            # 做法是删除旧实例后重试一次。
+            if "premium_slot_taken" not in str(error):
+                raise
+            current_instance_id = _extract_current_instance_id(str(error))
+            if not current_instance_id:
+                raise
+            logger.info(
+                "premium slot taken by stale session; deleting old instance_id=%s and retrying model=%s",
+                current_instance_id,
+                model,
+            )
+            await self.delete_session(current_instance_id)
+            data = await self._json(
+                "POST",
+                "/api/v1/freebuff/session",
+                headers=headers,
+            )
         if data.get("status") == "queued":
             return await self._wait_for_active_session(data, model)
         return self._session_from_data(data, model)
@@ -1359,6 +1382,12 @@ def utc_now_iso() -> str:
     )
 
 
+def _extract_current_instance_id(message: str) -> str | None:
+    """从 premium_slot_taken 错误信息中提取 currentInstanceId。"""
+    match = re.search(r"\"currentInstanceId\":\"([^\"]+)\"", message)
+    return match.group(1) if match else None
+
+
 def _host_header(url: str) -> str:
     parsed = urlparse(url)
     return parsed.netloc or "www.codebuff.com"
@@ -1423,6 +1452,11 @@ def _upstream_error(
                 "Codebuff 409 session_model_mismatch: "
                 f"{upstream_message} 上游判定当前账号或服务器出口只允许 DeepSeek V4 Flash；"
                 "即使公网定位显示 US，也可能因出口 IP 段、账号状态或上游限免策略无法使用 Pro。",
+                409,
+            )
+        if data.get("status") == "premium_slot_taken":
+            return CodebuffError(
+                f"Codebuff 409 premium_slot_taken: {text}",
                 409,
             )
 

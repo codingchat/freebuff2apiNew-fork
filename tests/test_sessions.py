@@ -183,6 +183,7 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
         settings = Settings(
             codebuff_token="token-a,token-b",
             local_api_key=None,
+            rotation_mode="balanced",
         )
 
         with patch("freebuff2api.codebuff.CodebuffClient", PoolClient):
