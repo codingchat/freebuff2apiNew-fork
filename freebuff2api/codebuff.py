@@ -180,14 +180,14 @@ class CodebuffClient:
             raise _network_error(method, url, error) from error
         if self.settings.debug:
             logger.debug(
-                "upstream json request method=%s url=%s headers=%s body=%s",
+                "[outbound] upstream json request method=%s url=%s headers=%s body=%s",
                 method,
                 url,
                 redact_headers(request_headers),
                 render_debug(body, self.settings.log_body_chars),
             )
             logger.debug(
-                "upstream json response status=%s body=%s",
+                "[outbound] upstream json response status=%s body=%s",
                 response.status_code,
                 render_debug(response.text, self.settings.log_body_chars),
             )
@@ -443,7 +443,7 @@ class CodebuffClient:
             raise _network_error("POST", url, error) from error
         if self.settings.debug:
             logger.debug(
-                "zeroclick impression ids=%s status=%s body=%s",
+                "[outbound] zeroclick impression ids=%s status=%s body=%s",
                 ids,
                 response.status_code,
                 render_debug(response.text, self.settings.log_body_chars),
@@ -551,13 +551,13 @@ class CodebuffClient:
             ) as response:
                 if self.settings.debug:
                     logger.debug(
-                        "chat stream request url=%s headers=%s payload=%s",
+                        "[outbound] chat stream request url=%s headers=%s payload=%s",
                         url,
                         redact_headers(request_headers),
                         render_debug(payload, self.settings.log_body_chars),
                     )
                     logger.debug(
-                        "chat stream response status=%s headers=%s",
+                        "[outbound] chat stream response status=%s headers=%s",
                         response.status_code,
                         redact_headers(dict(response.headers)),
                     )

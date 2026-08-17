@@ -350,6 +350,12 @@ async def chat_completions(request: Request) -> Any:
     settings = _settings(request)
     raw_body = await request.body()
     if len(raw_body) > settings.max_request_body_bytes:
+        logger.warning(
+            "[client] chat request rejected 413 body_too_large size=%s limit=%s ip=%s",
+            len(raw_body),
+            settings.max_request_body_bytes,
+            request.client.host if request.client else None,
+        )
         return JSONResponse(
             status_code=413,
             content={
@@ -394,18 +400,18 @@ async def chat_completions(request: Request) -> Any:
             },
         )
     logger.info(
-        "chat completion request model=%s stream=%s messages=%s",
+        "[client] chat completion request model=%s stream=%s messages=%s",
         model,
         body.get("stream") is True,
         len(body.get("messages") or []),
     )
     if settings.debug:
         logger.debug(
-            "incoming request headers=%s",
+            "[inbound] chat completion request headers=%s",
             redact_headers(dict(request.headers)),
         )
         logger.debug(
-            "chat completion request body=%s",
+            "[inbound] chat completion request body=%s",
             render_debug(body, settings.log_body_chars),
         )
 
@@ -433,7 +439,7 @@ async def chat_completions(request: Request) -> Any:
         )
         if settings.debug:
             logger.debug(
-                "prepared upstream chat trace=%s run=%s payload=%s",
+                "[outbound] prepared upstream chat trace=%s run=%s payload=%s",
                 trace_session_id,
                 run,
                 render_debug(payload, settings.log_body_chars),
@@ -847,6 +853,12 @@ async def anthropic_messages(request: Request) -> Any:
     settings = _settings(request)
     raw_body = await request.body()
     if len(raw_body) > settings.max_request_body_bytes:
+        logger.warning(
+            "[client] anthropic request rejected 413 body_too_large size=%s limit=%s ip=%s",
+            len(raw_body),
+            settings.max_request_body_bytes,
+            request.client.host if request.client else None,
+        )
         return JSONResponse(
             status_code=413,
             content=anthropic_error_payload(
@@ -915,7 +927,7 @@ async def anthropic_messages(request: Request) -> Any:
         )
     stream = body.get("stream") is True
     logger.info(
-        "anthropic messages request model=%s stream=%s messages=%s max_tokens=%s",
+        "[client] anthropic messages request model=%s stream=%s messages=%s max_tokens=%s",
         model,
         stream,
         len(body["messages"]),
@@ -923,11 +935,11 @@ async def anthropic_messages(request: Request) -> Any:
     )
     if settings.debug:
         logger.debug(
-            "incoming anthropic request headers=%s",
+            "[inbound] anthropic messages request headers=%s",
             redact_headers(dict(request.headers)),
         )
         logger.debug(
-            "anthropic messages request body=%s",
+            "[inbound] anthropic messages request body=%s",
             render_debug(body, settings.log_body_chars),
         )
 
@@ -953,7 +965,7 @@ async def anthropic_messages(request: Request) -> Any:
         )
         if settings.debug:
             logger.debug(
-                "prepared upstream anthropic trace=%s run=%s payload=%s",
+                "[outbound] prepared upstream anthropic trace=%s run=%s payload=%s",
                 trace_session_id,
                 run,
                 render_debug(payload, settings.log_body_chars),

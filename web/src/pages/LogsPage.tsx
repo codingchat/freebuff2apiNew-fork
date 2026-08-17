@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react"
 import { api } from "@/lib/api-client"
 import { Card, CardContent } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -30,6 +31,8 @@ export default function LogsPage() {
   const [level, setLevel] = useState<string>("")
   const [limit, setLimit] = useState(200)
   const [clearing, setClearing] = useState(false)
+  const [query, setQuery] = useState("")
+  const [category, setCategory] = useState("")
   const fetcher = useCallback(
     () => api.logs({ level: level || undefined, limit }),
     [level, limit],
@@ -37,7 +40,21 @@ export default function LogsPage() {
   const { data, loading, refresh } = usePolling(fetcher, 5000)
 
   const logsData: LogsData | null = data
-  const items: LogItem[] = logsData?.items || []
+  const rawItems: LogItem[] = logsData?.items || []
+  const items: LogItem[] = rawItems.filter((log) => {
+    if (query) {
+      const q = query.toLowerCase()
+      const haystack = `${log.time} ${log.level} [${log.logger}] ${log.message}`.toLowerCase()
+      if (!haystack.includes(q)) return false
+    }
+    if (category) {
+      const text = log.message.toLowerCase()
+      if (category === "client" && !text.includes("[client]")) return false
+      if (category === "inbound" && !text.includes("[inbound]")) return false
+      if (category === "outbound" && !text.includes("[outbound]")) return false
+    }
+    return true
+  })
 
   if (loading && !logsData) {
     return (
@@ -81,10 +98,27 @@ export default function LogsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">运行日志</h1>
           <p className="text-sm text-muted-foreground">
-            共 {items.length} 条（最多 {limit} 条）
+            共 {items.length} / {rawItems.length} 条（最多 {limit} 条）
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索日志..."
+            className="w-40 sm:w-56"
+          />
+          <Select value={category || "all"} onValueChange={(v) => setCategory(v === "all" ? "" : v ?? "")}>
+            <SelectTrigger className="w-28">
+              <SelectValue placeholder="分类" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="client">客户端请求</SelectItem>
+              <SelectItem value="inbound">入站请求</SelectItem>
+              <SelectItem value="outbound">出站请求</SelectItem>
+            </SelectContent>
+          </Select>
           <Select
             value={level}
             onValueChange={(v) => setLevel(v ?? "")}
