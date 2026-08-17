@@ -567,8 +567,14 @@ async def _stream_openai_chunks(
                 if (
                     not chunk_yielded
                     and not retried
-                    and "empty stream" in str(error)
                     and account_lease is not None
+                    and (
+                        "empty stream" in str(error)
+                        or "session expired" in str(error)
+                        or "session ended" in str(error)
+                        or error.status_code == 410
+                        or error.status_code == 428
+                    )
                 ):
                     retried = True
                     new_payload = await _recreate_session_and_run_for_retry(
@@ -577,7 +583,7 @@ async def _stream_openai_chunks(
                     if new_payload is not None:
                         payload = new_payload
                         logger.warning(
-                            "empty stream detected; recreated session and retrying model=%s",
+                            "session expired or empty stream detected; recreated session and retrying model=%s",
                             payload.get("model"),
                         )
                         continue
@@ -672,8 +678,14 @@ async def _collect_completion(
                 # session + run 重试一次；仍失败则把友好错误抛给上层返回客户端。
                 if (
                     not retried
-                    and "empty stream" in str(error)
                     and account_lease is not None
+                    and (
+                        "empty stream" in str(error)
+                        or "session expired" in str(error)
+                        or "session ended" in str(error)
+                        or error.status_code == 410
+                        or error.status_code == 428
+                    )
                 ):
                     retried = True
                     new_payload = await _recreate_session_and_run_for_retry(
@@ -683,7 +695,7 @@ async def _collect_completion(
                         payload = new_payload
                         accumulator = CompletionAccumulator(model)
                         logger.warning(
-                            "empty stream detected; recreated session and retrying model=%s",
+                            "session expired or empty stream detected; recreated session and retrying model=%s",
                             payload.get("model"),
                         )
                         continue
@@ -1121,8 +1133,14 @@ async def _stream_anthropic_events(
                 if (
                     finalized is False
                     and not retried
-                    and "empty stream" in str(error)
                     and account_lease is not None
+                    and (
+                        "empty stream" in str(error)
+                        or "session expired" in str(error)
+                        or "session ended" in str(error)
+                        or error.status_code == 410
+                        or error.status_code == 428
+                    )
                 ):
                     retried = True
                     new_payload = await _recreate_session_and_run_for_retry(
@@ -1204,8 +1222,14 @@ async def _collect_anthropic_message(
             except CodebuffError as error:
                 if (
                     not retried
-                    and "empty stream" in str(error)
                     and account_lease is not None
+                    and (
+                        "empty stream" in str(error)
+                        or "session expired" in str(error)
+                        or "session ended" in str(error)
+                        or error.status_code == 410
+                        or error.status_code == 428
+                    )
                 ):
                     retried = True
                     new_payload = await _recreate_session_and_run_for_retry(
@@ -1215,7 +1239,7 @@ async def _collect_anthropic_message(
                         payload = new_payload
                         accumulator = AnthropicCompletionAccumulator(model)
                         logger.warning(
-                            "empty stream detected; recreated session and retrying model=%s",
+                            "session expired or empty stream detected; recreated session and retrying model=%s",
                             payload.get("model"),
                         )
                         continue

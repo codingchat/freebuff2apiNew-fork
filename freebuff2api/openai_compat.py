@@ -295,6 +295,14 @@ def raise_for_stream_error(chunk: dict[str, Any]) -> None:
     error = chunk.get("error") if isinstance(chunk, dict) else None
     if error is None:
         return
+    # session_expired / waiting_room_required 等 gate code：session 超时，
+    # 我们可以在上层自动重建 session 重试一次。
+    if isinstance(error, str) and error in {
+        "session_expired",
+        "waiting_room_required",
+        "session_superseded",
+    }:
+        raise CodebuffError(f"Codebuff session ended: {error}", 410)
     if isinstance(error, dict):
         message = str(
             error.get("message")

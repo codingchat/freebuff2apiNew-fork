@@ -1512,6 +1512,12 @@ def _upstream_error(
             f"{prefix}: {response.status_code} {text}",
             428,
         )
+    # 410 session_expired：session 超时（1h 限制）。保留状态码供上层自动重建 session。
+    if response.status_code == 410:
+        return CodebuffError(
+            f"Codebuff session expired: {text}",
+            410,
+        )
     if response.status_code == 409:
         try:
             data = (
