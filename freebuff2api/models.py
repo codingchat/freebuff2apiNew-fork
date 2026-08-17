@@ -319,6 +319,8 @@ def _model_entry(model: FreebuffModel) -> dict[str, object]:
         "context_window": model.context_window,
         "max_input_tokens": max(1, model.context_window - model.max_output_tokens),
         "max_output_tokens": model.max_output_tokens,
+        "reasoning_efforts": list(model.reasoning_efforts) if model.reasoning_efforts else None,
+        "default_reasoning_effort": model.default_reasoning_effort,
         "input_modalities": list(model.input_modalities),
         "output_modalities": list(model.output_modalities),
     }
