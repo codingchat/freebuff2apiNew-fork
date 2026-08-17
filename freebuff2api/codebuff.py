@@ -691,7 +691,8 @@ class SessionManager:
                     None,
                     model,
                 }:
-                    self._raise_if_premium_quota_exhausted(data)
+                    if self._bucket(model) == "premium":
+                        self._raise_if_premium_quota_exhausted(data)
                     cached.remaining_ms = data.get("remainingMs")
                     logger.debug(
                         "reuse freebuff session model=%s instance_id=%s remaining_ms=%s",
@@ -811,7 +812,8 @@ class SessionManager:
         if data.get("status") != "active":
             return None
 
-        self._raise_if_premium_quota_exhausted(data)
+        if self._bucket(requested_model) == "premium":
+            self._raise_if_premium_quota_exhausted(data)
 
         current_model = data.get("model")
         instance_id = data.get("instanceId")
