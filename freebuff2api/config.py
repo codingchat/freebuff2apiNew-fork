@@ -180,6 +180,7 @@ class Settings:
     max_tools_per_request: int = 50  # 工具数上限：过多 MCP 工具会被判定外来客户端
     max_messages_per_request: int = 100  # 消息数上限：保留 system + 最近 N 条
     empty_stream_timeout: int = 120  # 空流超时（秒），超过后按空流错误处理
+    log_stream_chunks: bool = False  # 是否逐块记录流式 chunk（生产建议关闭）
 
     @property
     def codebuff_api_url(self) -> str:
@@ -289,6 +290,7 @@ def load_settings() -> Settings:
         max_tools_per_request=_int("FREEBUFF_MAX_TOOLS", 50),
         max_messages_per_request=_int("FREEBUFF_MAX_MESSAGES", 100),
         empty_stream_timeout=_int("FREEBUFF_EMPTY_STREAM_TIMEOUT", 120),
+        log_stream_chunks=_bool("FREEBUFF_LOG_STREAM_CHUNKS", False),
     )
 
 

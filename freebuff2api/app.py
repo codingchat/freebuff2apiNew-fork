@@ -545,7 +545,7 @@ async def _stream_openai_chunks(
                     message_id = data.get("id") or message_id
                     chunk = sanitize_stream_chunk(data)
                     if chunk is not None:
-                        if settings.debug:
+                        if settings.debug and settings.log_stream_chunks:
                             logger.debug(
                                 "chat stream chunk=%s",
                                 render_debug(chunk, settings.log_body_chars),
