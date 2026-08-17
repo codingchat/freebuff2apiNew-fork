@@ -15,7 +15,7 @@ import httpx
 
 from .config import HAR_BROWSER_USER_AGENT, Settings, project_env_path
 from .logging_config import redact_headers, render_debug
-from .models import agent_validation_payload, session_bucket_for_model
+from .models import agent_validation_payload, is_premium_quota_exhausted, session_bucket_for_model
 from .token_rotation import (
     STATUS_ACTIVE,
     STATUS_BLOCKED,
@@ -637,10 +637,21 @@ class SessionManager:
             "premium": asyncio.Lock(),
             "unlimited": asyncio.Lock(),
         }
+        self.premium_quota_exhausted_until = 0.0
 
     @staticmethod
     def _bucket(model: str) -> str:
         return session_bucket_for_model(model)
+
+    def _raise_if_premium_quota_exhausted(self, data: dict[str, Any]) -> None:
+        rate_limits = data.get("rateLimitsByModel") if isinstance(data, dict) else None
+        if not is_premium_quota_exhausted(rate_limits):
+            return
+        self.premium_quota_exhausted_until = next_beijing_1500_epoch()
+        raise CodebuffError(
+            "Freebuff premium daily quota exhausted. Resets at 15:00 Asia/Shanghai.",
+            403,
+        )
 
     def _lock_for(self, model: str) -> asyncio.Lock:
         return self._locks[self._bucket(model)]
@@ -680,6 +691,7 @@ class SessionManager:
                     None,
                     model,
                 }:
+                    self._raise_if_premium_quota_exhausted(data)
                     cached.remaining_ms = data.get("remainingMs")
                     logger.debug(
                         "reuse freebuff session model=%s instance_id=%s remaining_ms=%s",
@@ -799,6 +811,8 @@ class SessionManager:
         if data.get("status") != "active":
             return None
 
+        self._raise_if_premium_quota_exhausted(data)
+
         current_model = data.get("model")
         instance_id = data.get("instanceId")
         if current_model == requested_model and instance_id:
@@ -884,6 +898,7 @@ class CodebuffAccount:
     active_requests: int = 0
     premium_active_requests: int = 0
     unlimited_active_requests: int = 0
+    premium_quota_exhausted_until: float = 0.0
 
     @property
     def is_busy(self) -> bool:
@@ -988,6 +1003,16 @@ class CodebuffAccountPool:
                 await self.release(account_index, model)
                 if error.status_code == 429 or is_rate_limit_error(str(error)):
                     raise
+                if error.status_code == 403 and "quota exhausted" in str(error):
+                    account = self._accounts[account_index]
+                    account.premium_quota_exhausted_until = next_beijing_1500_epoch()
+                    account.sessions.premium_quota_exhausted_until = account.premium_quota_exhausted_until
+                    logger.warning(
+                        "account %s premium quota exhausted; will retry next account",
+                        account_index + 1,
+                    )
+                    last_error = error
+                    continue
                 last_error = error
                 self.handle_error(account_index, str(error), error.status_code, model)
                 logger.warning(
@@ -1068,10 +1093,38 @@ class CodebuffAccountPool:
                         wait_secs = min(remaining)
                 if wait_secs is None or wait_secs <= 0:
                     wait_secs = 5.0
+                if self._all_premium_accounts_unavailable(model):
+                    raise CodebuffError(
+                        "Freebuff premium daily quota exhausted. Resets at 15:00 Asia/Shanghai.",
+                        403,
+                    )
                 try:
                     await asyncio.wait_for(self._condition.wait(), timeout=wait_secs)
                 except asyncio.TimeoutError:
                     pass
+
+    def _all_premium_accounts_unavailable(self, model: str = "") -> bool:
+        """True 表示所有账号都不是因为 busy 而是因为额度耗尽/限流/失效而不可用。
+
+        用于在 _reserve_account 等待循环中提前返回 403，避免无限等待。
+        """
+        if session_bucket_for_model(model) != "premium":
+            return False
+        if not self._accounts:
+            return False
+        now = time.time()
+        for index, account in enumerate(self._accounts):
+            if account.premium_quota_exhausted_until > now:
+                continue
+            if self._rotation and (
+                self._rotation.is_blocked(index, model)
+                or self._rotation.status_of(index) == STATUS_INVALID
+            ):
+                continue
+            # 这个账号还在 busy，说明还有机会，不能判定全部不可用
+            if account.active_requests < self._max_concurrency and account.premium_active_requests < 1:
+                return False
+        return True
 
     def _next_available_index(self, model: str = "") -> int | None:
         """Select the next usable account according to the configured rotation mode.
@@ -1113,6 +1166,8 @@ class CodebuffAccountPool:
                 if account.active_requests >= self._max_concurrency:
                     continue
                 if account.premium_active_requests >= 1:
+                    continue
+                if account.premium_quota_exhausted_until > time.time():
                     continue
                 if self._rotation and (
                     self._rotation.is_blocked(account_index, model)

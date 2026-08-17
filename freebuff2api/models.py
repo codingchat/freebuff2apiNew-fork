@@ -123,6 +123,23 @@ UNLIMITED_SESSION_MODEL_IDS = frozenset(
 )
 
 
+def is_premium_quota_exhausted(rate_limits_by_model: dict[str, Any]) -> bool:
+    """检测上游返回的 rateLimitsByModel 是否所有 premium 模型额度都已耗尽。"""
+    if not isinstance(rate_limits_by_model, dict):
+        return False
+    premium_items = [
+        v for k, v in rate_limits_by_model.items()
+        if session_bucket_for_model(k) == "premium" and isinstance(v, dict)
+    ]
+    if not premium_items:
+        return False
+    return all(
+        float(v.get("limit") or 0) > 0
+        and float(v.get("recentCount") or 0) >= float(v.get("limit") or 0)
+        for v in premium_items
+    )
+
+
 def session_bucket_for_model(model: str) -> str:
     """返回官方 desktop session bucket：``premium`` 或 ``unlimited``。"""
     if model in UNLIMITED_SESSION_MODEL_IDS:
