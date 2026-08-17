@@ -502,6 +502,21 @@ async def chat_completions(request: Request) -> Any:
         await lease.aclose()
 
 
+async def _run_heartbeat_loop(
+    client: CodebuffClient,
+    instance_id: str,
+    active: asyncio.Event,
+) -> None:
+    """后台心跳：每 45 秒一次，直到 active 被 clear。"""
+    try:
+        while active.is_set():
+            await asyncio.sleep(45)
+            if active.is_set():
+                await client.heartbeat(instance_id)
+    except asyncio.CancelledError:
+        pass
+
+
 async def _stream_openai_chunks(
     request: Request,
     payload: dict[str, Any],
@@ -515,6 +530,11 @@ async def _stream_openai_chunks(
     message_id: str | None = None
     client = client or (account_lease.client if account_lease else _client(request))
     settings = _settings(request)
+    # 启动心跳保活
+    heartbeat_active = asyncio.Event()
+    heartbeat_active.set()
+    instance_id = (payload.get("codebuff_metadata") or {}).get("freebuff_instance_id", "")
+    heartbeat_task = asyncio.create_task(_run_heartbeat_loop(client, instance_id, heartbeat_active))
     done_sent = False
     chunk_yielded = False
     retried = False
@@ -636,6 +656,8 @@ async def _stream_openai_chunks(
         yield encode_sse("[DONE]")
         done_sent = True
     finally:
+        heartbeat_active.clear()
+        heartbeat_task.cancel()
         # 上游 EOF 但未发 [DONE]（免费通道长对话常见）→ 补发终止符，
         # 否则客户端等 [DONE] 等到连接关闭报 "terminated"。
         if not done_sent:
@@ -1082,6 +1104,11 @@ async def _stream_anthropic_events(
     started = time.time()
     client = client or (account_lease.client if account_lease else _client(request))
     settings = _settings(request)
+    # 启动心跳保活
+    heartbeat_active = asyncio.Event()
+    heartbeat_active.set()
+    instance_id = (payload.get("codebuff_metadata") or {}).get("freebuff_instance_id", "")
+    heartbeat_task = asyncio.create_task(_run_heartbeat_loop(client, instance_id, heartbeat_active))
     state = AnthropicStreamState(model=requested_model or payload.get("model", ""))
     _ping_active = True
     finalized = False
@@ -1190,6 +1217,8 @@ async def _stream_anthropic_events(
         if api_key:
             duration_ms = int((time.time() - started) * 1000)
             _record_request(request, api_key, payload.get("model", ""), duration_ms, "success")
+        heartbeat_active.clear()
+        heartbeat_task.cancel()
         _ping_active = False
         _schedule_finalize_run(client, run, None)
         if account_lease is not None:

@@ -372,6 +372,29 @@ class CodebuffClient:
         )
         logger.info("deleted active freebuff session")
 
+    async def heartbeat(self, instance_id: str) -> None:
+        """发送心跳保活（对齐官方桌面端 45 秒心跳）。
+
+        官方 FREEBUFF_SESSION_HEARTBEAT_INTERVAL_MS = 45000。
+        不心跳的话服务器可能提前回收 session，导致长任务被中断。
+        """
+        try:
+            response = await (await self._ensure_client()).get(
+                f"{self.settings.codebuff_api_url}/api/v1/freebuff/session",
+                headers=self._headers(
+                    extra={
+                        "x-freebuff-multi-session": "1",
+                        "x-freebuff-instance-id": instance_id,
+                        "x-freebuff-heartbeat": "1",
+                    }
+                ),
+                timeout=httpx.Timeout(10.0),
+            )
+            # 官方只发请求不读 body，直接 cancel
+            await response.aclose()
+        except Exception:
+            pass
+
     async def get_streak(self) -> dict[str, Any]:
         data = await self._json(
             "GET",
