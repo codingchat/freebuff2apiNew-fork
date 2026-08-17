@@ -742,9 +742,9 @@ async def _start_freebuff_run_chain(
     if model.parent_agent_id:
         return await _start_child_chat_run_chain(client, model)
 
-    # 精简版（对齐 Worker 1.7.0 startRunChain）：只 START 主 run + context-pruner
-    # 子 run。chat 只校验 run_id 存在，recordRunStep/finishRun 可跳过——去掉这些
-    # 额外管理请求可缩小请求特征暴露面（旧 CLI 行为已被上游统计）。
+    # 0.0.63 实测：官方桌面端对 context-pruner 使用 UNTRACKED_RUN_ID_PREFIX 假 run id，
+    # 并不调用 /api/v1/agent-runs。这里只 START 主 run，省掉一次 10s+ 的上游调用，
+    # 大幅降低首包前延迟，避免客户端在 run chain 阶段超时重试。
     agent_id = model.agent_id
     token = getattr(getattr(client, "settings", None), "codebuff_token", "") or ""
     cache_key = f"{token}:{agent_id}"
@@ -755,15 +755,11 @@ async def _start_freebuff_run_chain(
 
     started_at = utc_now_iso()
     run_id = await client.start_run(agent_id)
-    child_run_id = await client.start_run(
-        CONTEXT_PRUNER_AGENT_ID,
-        ancestor_run_ids=[run_id],
-    )
     run = FreebuffRun(
         run_id=run_id,
         agent_id=agent_id,
         started_at=started_at,
-        child_run_id=child_run_id,
+        child_run_id=None,
     )
     _store_cached_run(cache_key, run)
     return run

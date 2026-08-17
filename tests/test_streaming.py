@@ -173,14 +173,10 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         run = await _start_freebuff_run_chain(client, "base2-free-kimi")
 
         self.assertEqual(run.run_id, "run-1")
-        self.assertEqual(run.child_run_id, "run-2")
+        self.assertIsNone(run.child_run_id)
         self.assertEqual(client.calls[0], ("start", "base2-free-kimi", [], "run-1"))
-        self.assertEqual(
-            client.calls[1],
-            ("start", "context-pruner", ["run-1"], "run-2"),
-        )
-        # 精简版：只 START 两个 run，不再打 record_step / finish_run 管理请求。
-        self.assertEqual(len(client.calls), 2)
+        # 0.0.63 对齐：不再为 context-pruner 调用 agent-runs。
+        self.assertEqual(len(client.calls), 1)
 
     async def test_gemini_thinker_run_chain_uses_child_as_payload_run(self) -> None:
         client = FakeClient()
