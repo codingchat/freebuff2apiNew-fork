@@ -6,6 +6,7 @@ import sys
 import threading
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from itertools import count
 from typing import Any
 
@@ -13,6 +14,11 @@ from .config import Settings
 
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _format_time_beijing(record: logging.LogRecord) -> str:
+    return datetime.fromtimestamp(record.created, BEIJING_TZ).strftime(DATE_FORMAT)
 
 RESET = "\033[0m"
 COLORS = {
@@ -67,8 +73,7 @@ class InMemoryLogHandler(logging.Handler):
             self.handleError(record)
 
     def formatTime(self, record: logging.LogRecord) -> str:
-        formatter = logging.Formatter(datefmt=DATE_FORMAT)
-        return formatter.formatTime(record, DATE_FORMAT)
+        return _format_time_beijing(record)
 
     def records(
         self,
@@ -96,6 +101,9 @@ _memory_handler: InMemoryLogHandler | None = None
 
 
 class ColorFormatter(logging.Formatter):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        return _format_time_beijing(record)
+
     def format(self, record: logging.LogRecord) -> str:
         message = super().format(record)
         color = COLORS.get(record.levelno)
@@ -109,7 +117,13 @@ def configure_logging(settings: Settings) -> None:
     _plaintext = bool(getattr(settings, "log_plaintext", False))
 
     handler = logging.StreamHandler(sys.stdout)
-    formatter_cls = ColorFormatter if settings.log_color else logging.Formatter
+    if settings.log_color:
+        formatter_cls = ColorFormatter
+    else:
+        class PlainBeijingFormatter(logging.Formatter):
+            def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+                return _format_time_beijing(record)
+        formatter_cls = PlainBeijingFormatter
     handler.setFormatter(formatter_cls(LOG_FORMAT, datefmt=DATE_FORMAT))
 
     _memory_handler = InMemoryLogHandler(settings.admin_log_lines)

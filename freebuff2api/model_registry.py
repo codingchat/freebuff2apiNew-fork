@@ -148,7 +148,12 @@ class ModelRegistry:
     def start_background_refresh(self) -> None:
         def _run() -> None:
             try:
-                self.refresh_sync()
+                table = self.refresh_sync()
+                logger.info(
+                    "dynamic model registry refreshed models=%s fetched_at=%s",
+                    len(table.models),
+                    table.fetched_at,
+                )
             except Exception as error:
                 logger.info(
                     "background model registry refresh failed; hardcoded fallback active: %s",
