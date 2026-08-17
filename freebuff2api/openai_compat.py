@@ -142,7 +142,7 @@ def normalize_chat_messages(
                 "cache_control": {"type": "ephemeral"},
             },
         )
-    if max_messages is not None and len(normalized) > max_messages:
+    if max_messages and max_messages > 0 and len(normalized) > max_messages:
         system_messages = [m for m in normalized if m.get("role") == "system"]
         other_messages = [m for m in normalized if m.get("role") != "system"]
         keep_count = max(0, max_messages - len(system_messages))
