@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Any
 
 from .codebuff import CodebuffError, FreebuffSession
+
+logger = logging.getLogger("freebuff2api.openai_compat")
 from .models import normalize_reasoning_effort, resolve_model
 
 
@@ -190,6 +193,7 @@ def build_upstream_payload(
     trace_session_id: str | None = None,
     upstream_model_id: str | None = None,
     system_prompt: str | None = None,
+    max_tools: int | None = None,
 ) -> dict[str, Any]:
     payload = {
         key: body[key]
@@ -202,6 +206,17 @@ def build_upstream_payload(
     )
     payload["stream"] = True
     payload.setdefault("stop", ['"cb_easp"'])
+
+    # 工具数指纹：官方桌面端约 40 个工具，过多 MCP 工具（如 237 个）会被上游判定外来客户端。
+    # 超过 max_tools 时只保留前 N 个，降低风控概率。
+    tools = payload.get("tools")
+    if isinstance(tools, list) and max_tools is not None and len(tools) > max_tools:
+        logger.warning(
+            "trimming tools from %s to %s to avoid foreign_toolset detection",
+            len(tools),
+            max_tools,
+        )
+        payload["tools"] = tools[:max_tools]
 
     # 绕过上游 foreign_toolset 检测：带 tools 时注入官方专属名 end_turn（见 inject_end_turn_signature）
     if payload.get("tools") is not None:

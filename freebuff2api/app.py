@@ -436,6 +436,7 @@ async def chat_completions(request: Request) -> Any:
             trace_session_id=trace_session_id,
             upstream_model_id=model_config.upstream_id,
             system_prompt=settings.system_prompt_override,
+            max_tools=settings.max_tools_per_request,
         )
         if settings.debug:
             logger.debug(
@@ -958,6 +959,7 @@ async def anthropic_messages(request: Request) -> Any:
             trace_session_id=trace_session_id,
             upstream_model_id=model_config.upstream_id,
             system_prompt=settings.system_prompt_override,
+            max_tools=settings.max_tools_per_request,
         )
         if settings.debug:
             logger.debug(

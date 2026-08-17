@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid as uuid_mod
 from typing import Any
 
 from .codebuff import FreebuffSession
+
+logger = logging.getLogger("freebuff2api.anthropic_compat")
 from .models import normalize_reasoning_effort, resolve_model
 from .openai_compat import (
     clamp_output_tokens,
@@ -331,6 +334,7 @@ def build_anthropic_upstream_payload(
     upstream_model_id: str | None = None,
     top_k: int | None = None,
     system_prompt: str | None = None,
+    max_tools: int | None = None,
 ) -> dict[str, Any]:
     """Build the upstream OpenAI-style payload from an Anthropic request body."""
     # Resolve model.
@@ -395,6 +399,13 @@ def build_anthropic_upstream_payload(
 
     # Map tools.
     if openai_tools:
+        if max_tools is not None and len(openai_tools) > max_tools:
+            logger.warning(
+                "trimming tools from %s to %s to avoid foreign_toolset detection",
+                len(openai_tools),
+                max_tools,
+            )
+            openai_tools = openai_tools[:max_tools]
         payload["tools"] = inject_end_turn_signature(openai_tools)
 
     # Map tool_choice.

@@ -177,6 +177,7 @@ class Settings:
     max_concurrency_per_account: int = 2  # premium 1 + unlimited 1 两条通道
     rotation_mode: str = "conservative"  # throughput | balanced | conservative
     max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES  # 2 MB：过大请求直接 413
+    max_tools_per_request: int = 50  # 工具数上限：过多 MCP 工具会被判定外来客户端
 
     @property
     def codebuff_api_url(self) -> str:
@@ -283,6 +284,7 @@ def load_settings() -> Settings:
         max_request_records=_int("FREEBUFF_MAX_REQUEST_RECORDS", 5000),
         rotation_mode=os.getenv("FREEBUFF_ROTATION_MODE", "conservative"),
         max_request_body_bytes=_int("FREEBUFF_MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_REQUEST_BODY_BYTES),
+        max_tools_per_request=_int("FREEBUFF_MAX_TOOLS", 50),
     )
 
 
