@@ -438,6 +438,7 @@ async def chat_completions(request: Request) -> Any:
             system_prompt=settings.system_prompt_override,
             max_tools=settings.max_tools_per_request,
             llm_step_number=_next_llm_step_number(run.payload_run_id),
+            max_messages=settings.max_messages_per_request,
         )
         if settings.debug:
             logger.debug(
@@ -522,6 +523,14 @@ async def _stream_openai_chunks(
                     data = decode_sse_data(line)
                     if data is None:
                         continue
+                    if (
+                        not chunk_yielded
+                        and time.monotonic() - started > settings.empty_stream_timeout
+                    ):
+                        raise CodebuffError(
+                            "Codebuff chat returned empty stream (no content within timeout)",
+                            502,
+                        )
                     if data == "[DONE]":
                         if settings.debug:
                             logger.debug(
@@ -970,6 +979,7 @@ async def anthropic_messages(request: Request) -> Any:
             system_prompt=settings.system_prompt_override,
             max_tools=settings.max_tools_per_request,
             llm_step_number=_next_llm_step_number(run.payload_run_id),
+            max_messages=settings.max_messages_per_request,
         )
         if settings.debug:
             logger.debug(

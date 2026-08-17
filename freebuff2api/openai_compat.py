@@ -75,6 +75,7 @@ def normalize_chat_messages(
     messages: Any,
     *,
     system_prompt: str | None = None,
+    max_messages: int | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(messages, list):
         return []
@@ -141,6 +142,15 @@ def normalize_chat_messages(
                 "cache_control": {"type": "ephemeral"},
             },
         )
+    if max_messages is not None and len(normalized) > max_messages:
+        system_messages = [m for m in normalized if m.get("role") == "system"]
+        other_messages = [m for m in normalized if m.get("role") != "system"]
+        keep_count = max(0, max_messages - len(system_messages))
+        kept = other_messages[-keep_count:] if keep_count else []
+        # 避免以孤立 tool 消息开头
+        while kept and kept[0].get("role") == "tool":
+            kept = kept[1:]
+        normalized = system_messages + kept
     return normalized
 
 
@@ -214,6 +224,7 @@ def build_upstream_payload(
     system_prompt: str | None = None,
     max_tools: int | None = None,
     llm_step_number: str | None = None,
+    max_messages: int | None = None,
 ) -> dict[str, Any]:
     payload = {
         key: body[key]
@@ -222,7 +233,9 @@ def build_upstream_payload(
     }
     payload["model"] = upstream_model_id or model_id(body.get("model"))
     payload["messages"] = normalize_chat_messages(
-        body.get("messages"), system_prompt=system_prompt
+        body.get("messages"),
+        system_prompt=system_prompt,
+        max_messages=max_messages,
     )
     payload["stream"] = True
     payload.setdefault("stop", ['"cb_easp"'])

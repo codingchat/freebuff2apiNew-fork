@@ -336,6 +336,7 @@ def build_anthropic_upstream_payload(
     system_prompt: str | None = None,
     max_tools: int | None = None,
     llm_step_number: str | None = None,
+    max_messages: int | None = None,
 ) -> dict[str, Any]:
     """Build the upstream OpenAI-style payload from an Anthropic request body."""
     # Resolve model.
@@ -352,7 +353,11 @@ def build_anthropic_upstream_payload(
     raw_messages = anthropic_to_openai_messages(body)
 
     # Apply Buffy prompt injection via the existing normalizer.
-    messages = normalize_chat_messages(raw_messages, system_prompt=system_prompt)
+    messages = normalize_chat_messages(
+        raw_messages,
+        system_prompt=system_prompt,
+        max_messages=max_messages,
+    )
 
     # Build payload from allowed keys.
     payload: dict[str, Any] = {

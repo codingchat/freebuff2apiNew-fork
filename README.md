@@ -402,6 +402,8 @@ Content-Type: application/json
 | `FREEBUFF_ROTATION_MODE` | ❌ | `conservative` | 账号轮换模式：`throughput` / `balanced` / `conservative` |
 | `FREEBUFF_MAX_REQUEST_BODY_BYTES` | ❌ | `2097152` | 请求体大小上限（字节，默认 2 MB），超过返回 413 |
 | `FREEBUFF_MAX_TOOLS` | ❌ | `50` | 单请求工具数上限，超过只保留前 N 个（降低外来客户端指纹） |
+| `FREEBUFF_MAX_MESSAGES` | ❌ | `100` | 消息数上限，超过保留 system + 最近 N 条 |
+| `FREEBUFF_EMPTY_STREAM_TIMEOUT` | ❌ | `120` | 空流超时（秒），超过返回明确错误 |
 | `FREEBUFF_SESSION_ID` | ❌ | 随机 | 上游会话 ID（通常自动生成，无需设置） |
 | `FREEBUFF_SYSTEM_PROMPT_OVERRIDE` | ❌ | - | 覆盖注入的 Buffy 系统提示词（追加在真实 Buffy 提示词之后） |
 | `FREEBUFF_AD_PROVIDERS` | ❌ | `gravity,carbon` | 广告提供商顺序（逗号分隔；上游现已不接受 `zeroclick`） |
