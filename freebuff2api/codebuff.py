@@ -1677,9 +1677,7 @@ def _upstream_error(
         if data.get("error") == "session_model_mismatch":
             upstream_message = data.get("message") or text
             return CodebuffError(
-                "Codebuff 409 session_model_mismatch: "
-                f"{upstream_message} 上游判定当前账号或服务器出口只允许 DeepSeek V4 Flash；"
-                "即使公网定位显示 US，也可能因出口 IP 段、账号状态或上游限免策略无法使用 Pro。",
+                f"Codebuff 409 session_model_mismatch: {upstream_message}",
                 409,
             )
         if data.get("status") == "premium_slot_taken":

@@ -120,11 +120,6 @@ def notice_for_error(error: Exception, model: str = "") -> str | None:
             NOTICE_PREFIX
             + "上游会话被新实例占用，服务会自动重建会话，请重新发送一次。"
         )
-    if "session_model_mismatch" in lower:
-        return (
-            NOTICE_PREFIX
-            + "上游会话模型不匹配，服务会自动重建会话，请重试一次。"
-        )
     if "policy violation" in lower:
         return (
             NOTICE_PREFIX
@@ -177,6 +172,11 @@ def describe_error(error: Exception) -> str:
         return "中转服务当前没有可用账号，请稍后重试或联系管理员。"
     if "request body too large" in lower or "请求体过大" in original:
         return "请求体超过中转服务限制，请减小上下文/附件大小。"
+    if "session_model_mismatch" in lower:
+        return (
+            "上游返回会话模型不匹配（session_model_mismatch），"
+            "通常是账号被 limited tier 限制，上游把所有模型请求强制转为 mimo/mimo-v2.5。"
+        )
     if "520" in original:
         return "官方上游服务器崩溃（520），与请求内容无关；请稍后重试或切换模型。"
     if "session is not active" in lower:
