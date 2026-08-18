@@ -395,7 +395,7 @@ async def chat_completions(request: Request) -> Any:
     _check_freebuff_token(request)
     settings = _settings(request)
     raw_body = await request.body()
-    if len(raw_body) > settings.max_request_body_bytes:
+    if settings.max_request_body_bytes > 0 and len(raw_body) > settings.max_request_body_bytes:
         logger.warning(
             "[client] chat request rejected 413 body_too_large size=%s limit=%s ip=%s",
             len(raw_body),
@@ -983,7 +983,7 @@ async def anthropic_messages(request: Request) -> Any:
     _check_freebuff_token(request)
     settings = _settings(request)
     raw_body = await request.body()
-    if len(raw_body) > settings.max_request_body_bytes:
+    if settings.max_request_body_bytes > 0 and len(raw_body) > settings.max_request_body_bytes:
         logger.warning(
             "[client] anthropic request rejected 413 body_too_large size=%s limit=%s ip=%s",
             len(raw_body),

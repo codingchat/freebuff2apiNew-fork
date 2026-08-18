@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any
 
 from .codebuff import CodebuffError, FreebuffSession
+from .tool_schema import normalize_tool_schemas
 
 logger = logging.getLogger("freebuff2api.openai_compat")
 from .models import normalize_reasoning_effort, resolve_model
@@ -250,6 +251,9 @@ def build_upstream_payload(
             max_tools,
         )
         payload["tools"] = tools[:max_tools]
+
+    # 降低工具指纹：把客户端工具 schema 归一化成官方桌面端风格的干净 JSON Schema。
+    normalize_tool_schemas(payload)
 
     # 绕过上游 foreign_toolset 检测：带 tools 时注入官方专属名 end_turn（见 inject_end_turn_signature）
     if payload.get("tools") is not None:

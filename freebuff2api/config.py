@@ -22,7 +22,7 @@ HAR_BROWSER_USER_AGENT = (
 )
 
 DEFAULT_ADMIN_KEY = "sk-admin"
-DEFAULT_MAX_REQUEST_BODY_BYTES = 3_145_728  # 3 MB：过大请求直接 413，避免打崩上游
+DEFAULT_MAX_REQUEST_BODY_BYTES = 0  # 0 = 不限制请求体大小（官方满上下文约 522KB，大小不是指纹）
 
 # 默认兜底指纹必须是“干净的”：绝不回退到亚洲/中国时区。
 # 服务端会把设备时区/locale 用于地区访问层判定（limited access tier），
@@ -176,7 +176,7 @@ class Settings:
     max_request_records: int = 5000
     max_concurrency_per_account: int = 2  # premium 1 + unlimited 1 两条通道
     rotation_mode: str = "conservative"  # throughput | balanced | conservative
-    max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES  # 3 MB：过大请求直接 413
+    max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES  # 0 = 不限制
     max_tools_per_request: int = 100  # 工具数上限：过多 MCP 工具会被判定外来客户端
     max_messages_per_request: int = 0  # 0 = 不限制  # 消息数上限：保留 system + 最近 N 条
     empty_stream_timeout: int = 120  # 空流超时（秒），超过后按空流错误处理
