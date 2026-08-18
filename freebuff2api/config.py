@@ -177,7 +177,7 @@ class Settings:
     max_concurrency_per_account: int = 2  # premium 1 + unlimited 1 两条通道
     rotation_mode: str = "conservative"  # throughput | balanced | conservative
     max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES  # 2 MB：过大请求直接 413
-    max_tools_per_request: int = 50  # 工具数上限：过多 MCP 工具会被判定外来客户端
+    max_tools_per_request: int = 100  # 工具数上限：过多 MCP 工具会被判定外来客户端
     max_messages_per_request: int = 0  # 0 = 不限制  # 消息数上限：保留 system + 最近 N 条
     empty_stream_timeout: int = 120  # 空流超时（秒），超过后按空流错误处理
     log_stream_chunks: bool = False  # 是否逐块记录流式 chunk（生产建议关闭）
@@ -287,7 +287,7 @@ def load_settings() -> Settings:
         max_request_records=_int("FREEBUFF_MAX_REQUEST_RECORDS", 5000),
         rotation_mode=os.getenv("FREEBUFF_ROTATION_MODE", "conservative"),
         max_request_body_bytes=_int("FREEBUFF_MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_REQUEST_BODY_BYTES),
-        max_tools_per_request=_int("FREEBUFF_MAX_TOOLS", 50),
+        max_tools_per_request=_int("FREEBUFF_MAX_TOOLS", 100),
         max_messages_per_request=_int("FREEBUFF_MAX_MESSAGES", 0),
         empty_stream_timeout=_int("FREEBUFF_EMPTY_STREAM_TIMEOUT", 120),
         log_stream_chunks=_bool("FREEBUFF_LOG_STREAM_CHUNKS", False),

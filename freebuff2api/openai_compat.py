@@ -344,6 +344,11 @@ def sanitize_stream_chunk(chunk: dict[str, Any]) -> dict[str, Any] | None:
         if item["delta"].get("content") is None:
             item["delta"].pop("content", None)
         if isinstance(reasoning_content, str):
+            # 若模型只输出 reasoning（思考链）而 content 为空，部分客户端
+            # 不支持 reasoning_content 就会显示空回复。这里把思考链同时放进
+            # content，保证客户端至少能看到内容，避免“任务做到一半没下文”。
+            if not item["delta"].get("content"):
+                item["delta"]["content"] = reasoning_content
             item["delta"]["reasoning_content"] = reasoning_content
         clean["choices"].append(item)
 

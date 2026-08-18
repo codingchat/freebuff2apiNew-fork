@@ -329,7 +329,8 @@ class OpenAICompatTests(unittest.TestCase):
         self.assertEqual(message["content"], "answer")
         self.assertEqual(message["reasoning_content"], "thinking")
 
-    def test_stream_chunk_keeps_reasoning_content_separate(self) -> None:
+    def test_stream_chunk_falls_back_reasoning_to_content(self) -> None:
+        """若 content 为空而 reasoning_content 存在，拷贝到 content 供不支持 reasoning 的客户端使用。"""
         chunk = sanitize_stream_chunk(
             {
                 "id": "chunk-1",
@@ -346,7 +347,7 @@ class OpenAICompatTests(unittest.TestCase):
         )
 
         delta = chunk["choices"][0]["delta"]
-        self.assertNotIn("content", delta)
+        self.assertEqual(delta["content"], "hello")
         self.assertEqual(delta["reasoning_content"], "hello")
 
 
