@@ -654,16 +654,27 @@ class CodebuffClient:
                         "Codebuff chat returned empty stream",
                         502,
                     ) from None
-                if self.settings.debug and self.settings.log_stream_chunks:
+                line_count = 0
+                if self.settings.debug and (
+                    self.settings.log_stream_chunks or line_count <= 10
+                ):
+                    line_count += 1
                     logger.debug(
-                        "chat stream line=%s",
+                        "chat stream upstream line #%s bytes=%s data=%s",
+                        line_count,
+                        len(first_line.encode("utf-8", errors="replace")),
                         render_debug(first_line, self.settings.log_body_chars),
                     )
                 yield first_line
                 async for line in lines:
-                    if self.settings.debug and self.settings.log_stream_chunks:
+                    if self.settings.debug and (
+                        self.settings.log_stream_chunks or line_count <= 10
+                    ):
+                        line_count += 1
                         logger.debug(
-                            "chat stream line=%s",
+                            "chat stream upstream line #%s bytes=%s data=%s",
+                            line_count,
+                            len(line.encode("utf-8", errors="replace")),
                             render_debug(line, self.settings.log_body_chars),
                         )
                     yield line
