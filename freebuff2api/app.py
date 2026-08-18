@@ -519,7 +519,10 @@ async def chat_completions(request: Request) -> Any:
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
-                "Connection": "keep-alive",
+                # SSE 流式响应不参与 keep-alive 连接复用：设置 close 可避免
+                # hyper/reqwest 客户端复用已被 Railway 边缘关闭的空闲连接，
+                # 从而降低 "hyper::Error(IncompleteMessage)" 竞态。
+                "Connection": "close",
                 "X-Accel-Buffering": "no",
             },
         )
@@ -1152,7 +1155,10 @@ async def anthropic_messages(request: Request) -> Any:
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
-                "Connection": "keep-alive",
+                # SSE 流式响应不参与 keep-alive 连接复用：设置 close 可避免
+                # hyper/reqwest 客户端复用已被 Railway 边缘关闭的空闲连接，
+                # 从而降低 "hyper::Error(IncompleteMessage)" 竞态。
+                "Connection": "close",
                 "X-Accel-Buffering": "no",
             },
         )
