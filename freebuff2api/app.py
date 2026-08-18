@@ -593,6 +593,7 @@ async def _stream_openai_chunks(
     done_sent = False
     recorded = False
     chunk_yielded = False
+    chunk_log_count = 0
     retried = False
     try:
         while True:
@@ -623,12 +624,18 @@ async def _stream_openai_chunks(
                     message_id = data.get("id") or message_id
                     chunk = sanitize_stream_chunk(data)
                     if chunk is not None:
-                        if settings.debug and settings.log_stream_chunks:
+                        payload = encode_sse(chunk)
+                        chunk_log_count += 1
+                        if settings.debug and (
+                            settings.log_stream_chunks or chunk_log_count <= 10
+                        ):
                             logger.debug(
-                                "chat stream chunk=%s",
+                                "chat stream downstream chunk #%s bytes=%s data=%s",
+                                chunk_log_count,
+                                len(payload),
                                 render_debug(chunk, settings.log_body_chars),
                             )
-                        yield encode_sse(chunk)
+                        yield payload
                         chunk_yielded = True
                     elif settings.debug:
                         logger.debug(
