@@ -622,7 +622,10 @@ async def _stream_openai_chunks(
                         break
 
                     message_id = data.get("id") or message_id
-                    chunk = sanitize_stream_chunk(data)
+                    chunk = sanitize_stream_chunk(
+                        data,
+                        fold_reasoning_in_content=settings.reasoning_in_content,
+                    )
                     if chunk is not None:
                         payload = encode_sse(chunk)
                         chunk_log_count += 1

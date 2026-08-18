@@ -168,7 +168,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         first_payload = json.loads(chunks[0].removeprefix("data: ").strip())
 
         delta = first_payload["choices"][0]["delta"]
-        self.assertEqual(delta["content"], "hello")
+        self.assertNotIn("content", delta)
         self.assertEqual(delta["reasoning_content"], "hello")
         self.assertEqual(chunks[1], "data: [DONE]\n\n")
 

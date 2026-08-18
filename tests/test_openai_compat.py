@@ -329,8 +329,8 @@ class OpenAICompatTests(unittest.TestCase):
         self.assertEqual(message["content"], "answer")
         self.assertEqual(message["reasoning_content"], "thinking")
 
-    def test_stream_chunk_falls_back_reasoning_to_content(self) -> None:
-        """若 content 为空而 reasoning_content 存在，拷贝到 content 供不支持 reasoning 的客户端使用。"""
+    def test_stream_chunk_keeps_reasoning_separate_by_default(self) -> None:
+        """默认关闭折叠：reasoning_content 作为扩展字段保留，不混入 content。"""
         chunk = sanitize_stream_chunk(
             {
                 "id": "chunk-1",
@@ -347,9 +347,30 @@ class OpenAICompatTests(unittest.TestCase):
         )
 
         delta = chunk["choices"][0]["delta"]
-        self.assertEqual(delta["content"], "hello")
+        self.assertNotIn("content", delta)
         self.assertEqual(delta["reasoning_content"], "hello")
 
+    def test_stream_chunk_folds_reasoning_with_think_tags_when_enabled(self) -> None:
+        """开启折叠后，reasoning_content 以 <think> 标签写入 content 并保留原字段。"""
+        chunk = sanitize_stream_chunk(
+            {
+                "id": "chunk-1",
+                "created": 1,
+                "model": "deepseek/deepseek-v4-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": None, "reasoning_content": "hello"},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            fold_reasoning_in_content=True,
+        )
+
+        delta = chunk["choices"][0]["delta"]
+        self.assertEqual(delta["content"], "<think>hello</think>")
+        self.assertEqual(delta["reasoning_content"], "hello")
 
     def test_stream_chunk_raises_on_upstream_error(self) -> None:
         """上游 200 但 SSE 流内下发 error chunk 时必须抛错，不能当空 chunk 丢弃。"""

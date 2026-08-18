@@ -22,7 +22,7 @@ HAR_BROWSER_USER_AGENT = (
 )
 
 DEFAULT_ADMIN_KEY = "sk-admin"
-DEFAULT_MAX_REQUEST_BODY_BYTES = 2_097_152  # 2 MB：过大请求直接 413，避免打崩上游
+DEFAULT_MAX_REQUEST_BODY_BYTES = 3_145_728  # 3 MB：过大请求直接 413，避免打崩上游
 
 # 默认兜底指纹必须是“干净的”：绝不回退到亚洲/中国时区。
 # 服务端会把设备时区/locale 用于地区访问层判定（limited access tier），
@@ -176,11 +176,12 @@ class Settings:
     max_request_records: int = 5000
     max_concurrency_per_account: int = 2  # premium 1 + unlimited 1 两条通道
     rotation_mode: str = "conservative"  # throughput | balanced | conservative
-    max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES  # 2 MB：过大请求直接 413
+    max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES  # 3 MB：过大请求直接 413
     max_tools_per_request: int = 100  # 工具数上限：过多 MCP 工具会被判定外来客户端
     max_messages_per_request: int = 0  # 0 = 不限制  # 消息数上限：保留 system + 最近 N 条
     empty_stream_timeout: int = 120  # 空流超时（秒），超过后按空流错误处理
     log_stream_chunks: bool = False  # 是否逐块记录流式 chunk（生产建议关闭）
+    reasoning_in_content: bool = False  # 是否把 reasoning_content 以 <think> 标签折叠进 content
 
     @property
     def codebuff_api_url(self) -> str:
@@ -291,6 +292,7 @@ def load_settings() -> Settings:
         max_messages_per_request=_int("FREEBUFF_MAX_MESSAGES", 0),
         empty_stream_timeout=_int("FREEBUFF_EMPTY_STREAM_TIMEOUT", 120),
         log_stream_chunks=_bool("FREEBUFF_LOG_STREAM_CHUNKS", False),
+        reasoning_in_content=_bool("FREEBUFF_REASONING_IN_CONTENT", False),
     )
 
 

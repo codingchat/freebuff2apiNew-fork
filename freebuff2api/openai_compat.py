@@ -318,7 +318,21 @@ def raise_for_stream_error(chunk: dict[str, Any]) -> None:
     raise CodebuffError(f"Codebuff chat stream error: {message}", status_code)
 
 
-def sanitize_stream_chunk(chunk: dict[str, Any]) -> dict[str, Any] | None:
+def sanitize_stream_chunk(
+    chunk: dict[str, Any],
+    *,
+    fold_reasoning_in_content: bool = False,
+    reasoning_in_content_tag: str = "think",
+) -> dict[str, Any] | None:
+    """清洗一个上游 SSE chunk。
+
+    ``fold_reasoning_in_content`` 对齐 freebuff-proxy 的 REASONING_IN_CONTENT：
+    - 默认 False：``reasoning_content`` 原样作为 delta 扩展字段保留，不混入
+      ``content``（符合 OpenAI Chat Completions 标准流式事件形态）。
+    - 开启后：把每个 reasoning 片段折叠成 ``<tag>...</tag>`` 文本放入
+      ``content``，同时仍保留 ``reasoning_content``，供不渲染思考通道的
+      旧客户端仍能看到模型思考内容。
+    """
     raise_for_stream_error(chunk)
     clean = {
         "id": chunk.get("id") or f"chatcmpl-{uuid.uuid4().hex}",
@@ -344,12 +358,16 @@ def sanitize_stream_chunk(chunk: dict[str, Any]) -> dict[str, Any] | None:
         if item["delta"].get("content") is None:
             item["delta"].pop("content", None)
         if isinstance(reasoning_content, str):
-            # 若模型只输出 reasoning（思考链）而 content 为空，部分客户端
-            # 不支持 reasoning_content 就会显示空回复。这里把思考链同时放进
-            # content，保证客户端至少能看到内容，避免“任务做到一半没下文”。
-            if not item["delta"].get("content"):
-                item["delta"]["content"] = reasoning_content
             item["delta"]["reasoning_content"] = reasoning_content
+            if fold_reasoning_in_content and reasoning_content:
+                tag = reasoning_in_content_tag or "think"
+                existing = item["delta"].get("content")
+                if isinstance(existing, str):
+                    item["delta"]["content"] = (
+                        f"<{tag}>{reasoning_content}</{tag}>{existing}"
+                    )
+                elif "content" not in item["delta"] or existing is None:
+                    item["delta"]["content"] = f"<{tag}>{reasoning_content}</{tag}>"
         clean["choices"].append(item)
 
     if not clean["choices"] and clean.get("usage") is None:
