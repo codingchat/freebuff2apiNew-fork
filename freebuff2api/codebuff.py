@@ -22,10 +22,16 @@ from .token_rotation import (
     STATUS_CHECKING,
     STATUS_INVALID,
     RotationState,
-    is_ban_error,
+    is_account_banned,
+    is_capacity_deferred,
+    is_country_blocked,
+    is_insufficient_quota,
+    is_ip_capped,
+    is_model_unavailable,
     is_policy_violation_error,
     is_provider_usage_error,
     is_rate_limit_error,
+    is_spend_limited,
     next_beijing_1500_epoch,
     parse_429_info,
 )
@@ -322,6 +328,26 @@ class CodebuffClient:
         if status == "rate_limited":
             raise CodebuffError(
                 f"Freebuff session rate_limited: 429 {json.dumps(data, ensure_ascii=False)}",
+                429,
+            )
+        if status == "spend_limited":
+            raise CodebuffError(
+                f"Freebuff session spend_limited: 429 {json.dumps(data, ensure_ascii=False)}",
+                429,
+            )
+        if status == "ip_capped":
+            raise CodebuffError(
+                f"Freebuff session ip_capped: 429 {json.dumps(data, ensure_ascii=False)}",
+                429,
+            )
+        if status == "model_unavailable":
+            raise CodebuffError(
+                f"Freebuff session model_unavailable: 429 {json.dumps(data, ensure_ascii=False)}",
+                429,
+            )
+        if status == "free_mode_capacity_deferred":
+            raise CodebuffError(
+                f"Freebuff session free_mode_capacity_deferred: 429 {json.dumps(data, ensure_ascii=False)}",
                 429,
             )
         if status == "premium_slot_taken":
@@ -968,6 +994,8 @@ class CodebuffAccountPool:
         self.rotation_mode = getattr(settings, "rotation_mode", "balanced")
         self._premium_index = self._rotation.current_index if self._accounts else 0
         self._premium_banned_until = 0.0
+        self._invalid_reasons: dict[int, str] = {}
+        self._insufficient_quota_strikes: dict[tuple[int, str], tuple[int, float]] = {}
         self._last_used: dict[int, float] = {}
         self._probe_tasks: set[asyncio.Task] = set()
 
@@ -1004,13 +1032,9 @@ class CodebuffAccountPool:
         messages: list[dict[str, Any]] | None = None,
     ) -> CodebuffAccountLease:
         bucket = session_bucket_for_model(model) if model else "premium"
-        if (
-            bucket == "premium"
-            and self.rotation_mode in {"balanced", "conservative"}
-            and time.time() < self._premium_banned_until
-        ):
+        if time.time() < self._premium_banned_until:
             raise CodebuffError(
-                "Freebuff premium/limited models are disabled until the next 15:00 Asia/Shanghai because an account was banned.",
+                "Freebuff account banned; all models are disabled until the next 15:00 Asia/Shanghai.",
                 403,
             )
         last_error: Exception | None = None
@@ -1028,6 +1052,20 @@ class CodebuffAccountPool:
             except CodebuffError as error:
                 await self.release(account_index, model)
                 if is_rate_limit_error(str(error)):
+                    self.handle_error(account_index, str(error), error.status_code, model)
+                    last_error = error
+                    continue
+                if is_account_banned(str(error)) or is_country_blocked(str(error)):
+                    self.handle_error(account_index, str(error), error.status_code, model)
+                    raise
+                if (
+                    is_insufficient_quota(str(error))
+                    or is_capacity_deferred(str(error))
+                    or is_spend_limited(str(error))
+                    or is_ip_capped(str(error))
+                    or is_model_unavailable(str(error))
+                ):
+                    self.handle_error(account_index, str(error), error.status_code, model)
                     raise
                 if error.status_code == 403 and "quota exhausted" in str(error):
                     account = self._accounts[account_index]
@@ -1059,6 +1097,7 @@ class CodebuffAccountPool:
             # Success: reset the transient-failure counter (optimization ②)
             if self._rotation is not None:
                 self._rotation.mark_success(account_index)
+            self._insufficient_quota_strikes.pop((account_index, model), None)
             self._last_used[account_index] = time.monotonic()
             logger.info(
                 "account session acquired index=%s session_model=%s instance_id=%s remaining_ms=%s",
@@ -1306,6 +1345,7 @@ class CodebuffAccountPool:
                     "failure_count": (
                         self._rotation.failure_count_of(index) if self._rotation else 0
                     ),
+                    "invalid_reason": self._invalid_reasons.get(index, ""),
                     "is_current": bool(
                         self._rotation and index == self._rotation.current_index
                     ),
@@ -1322,31 +1362,46 @@ class CodebuffAccountPool:
     def handle_error(self, index: int, message: str, status_code: int = 502, model: str = "") -> None:
         """Record an upstream error against an account.
 
-        - Ban (403 / banned / country_blocked / policy violation): mark the account
-          invalid; in balanced/conservative mode disable premium for everyone until
-          the next 15:00 Asia/Shanghai.
-        - Normal 429 rate limit: cool down the account/model, rotate to the next
-          usable account; in balanced/conservative premium mode this is the normal
-          "6 小时额度用完，换下一个账号" failover.
-        - Transient 5xx/network: failure counter.
+        分类逻辑（重点是区分账号封禁 / 地区限制 / 额度耗尽 / 上游拥堵）：
+
+        - ``banned``：账号级封禁。标记该账号并全局停用所有模型到下一个
+          北京时间 15:00，不再尝试其他账号（避免连带）。
+        - ``country_blocked``：出口 IP 地区限制。账号本身没问题，不标记
+          账号失效，也不轮换（所有账号共享同一个出口 IP）。
+        - ``policy violation``：上游模型提供商策略违规，只封当前模型。
+        - ``rate_limited`` / 其他 429：正常每日额度耗尽，轮换到下一个账号。
+        - ``insufficient_quota``：上游负载饱和。第一次只提示不轮换；
+          同一账号同一模型连续第二次仍返回该错误时，按额度耗尽处理并轮换。
+        - ``provider usage`` / ``capacity_deferred``：官方侧问题，不轮换。
         """
         if self._rotation is None:
             return
         bucket = session_bucket_for_model(model) if model else "premium"
 
-        if status_code == 403 or is_ban_error(message):
+        if is_account_banned(message):
             self._rotation.mark_invalid(index)
+            self._invalid_reasons[index] = "banned"
+            self._premium_banned_until = next_beijing_1500_epoch()
             logger.warning(
-                "account %s banned/blocked; marking invalid message=%s",
+                "account %s banned; marked invalid and disabled all models until next 15:00 Asia/Shanghai message=%s",
                 index + 1,
                 message[:300],
             )
-            if self.rotation_mode in {"balanced", "conservative"} and bucket == "premium":
-                self._premium_banned_until = next_beijing_1500_epoch()
-                logger.warning(
-                    "premium disabled until next 15:00 Asia/Shanghai (%s)",
-                    self._premium_banned_until,
-                )
+            return
+
+        if is_country_blocked(message):
+            logger.warning(
+                "account %s country_blocked (egress IP issue); keeping account active and not rotating",
+                index + 1,
+            )
+            return
+
+        if is_spend_limited(message) or is_ip_capped(message) or is_model_unavailable(message):
+            logger.warning(
+                "account %s temporary upstream limit (spend/ip/model); no rotation model=%s",
+                index + 1,
+                model,
+            )
             return
 
         if is_provider_usage_error(message):
@@ -1357,8 +1412,6 @@ class CodebuffAccountPool:
             return
 
         if is_policy_violation_error(message):
-            # 上游模型提供商策略违规（常见于 Luna/Azure）：只封当前模型到下一个 15:00，
-            # 不标记账号失效，其他 premium 模型继续可用。
             until = max(0.0, next_beijing_1500_epoch() - time.time())
             retry_ms = int(until * 1000)
             self._rotation.block(index, retry_ms, model)
@@ -1369,7 +1422,60 @@ class CodebuffAccountPool:
             )
             return
 
-        if is_rate_limit_error(message):
+        if status_code == 403:
+            self._rotation.mark_invalid(index)
+            self._invalid_reasons[index] = "forbidden"
+            logger.warning(
+                "account %s marked invalid due to unclassified 403 message=%s",
+                index + 1,
+                message[:300],
+            )
+            return
+
+        if is_capacity_deferred(message):
+            logger.warning(
+                "account %s free_mode_capacity_deferred (capacity full); no rotation",
+                index + 1,
+            )
+            return
+
+        if is_insufficient_quota(message):
+            key = (index, model)
+            now = time.time()
+            previous = self._insufficient_quota_strikes.get(key)
+            if previous is None or now - previous[1] > 1800:
+                strikes = 1
+            else:
+                strikes = previous[0] + 1
+            self._insufficient_quota_strikes[key] = (strikes, now)
+            if strikes >= 2:
+                self._insufficient_quota_strikes[key] = (0, now)
+                _, status = self._rotation.rotate(
+                    reason="insufficient_quota_x2",
+                    error_message=message,
+                    is_429=True,
+                    failed_index=index,
+                    model=model,
+                )
+                if self.rotation_mode in {"balanced", "conservative"} and bucket == "premium":
+                    self._premium_index = self._rotation.current_index
+                logger.warning(
+                    "account %s insufficient_quota twice; treating as quota exhausted and rotating to %s status=%s model=%s",
+                    index + 1,
+                    self._rotation.current_index + 1,
+                    status,
+                    model,
+                )
+            else:
+                logger.info(
+                    "account %s insufficient_quota strike %s/2; not rotating model=%s",
+                    index + 1,
+                    strikes,
+                    model,
+                )
+            return
+
+        if is_rate_limit_error(message) or status_code == 429:
             _, status = self._rotation.rotate(
                 reason="429",
                 error_message=message,
@@ -1389,6 +1495,7 @@ class CodebuffAccountPool:
             )
         elif status_code in (502, 500):
             self._rotation.record_failure(index)
+
 
     def manual_rotate(self) -> int:
         if self._rotation is None:
@@ -1602,7 +1709,22 @@ def _upstream_error(
             f"{prefix}: 429 {text}",
             429,
         )
-    if data.get("error") == "free_mode_capacity_deferred":
+    if status == "spend_limited":
+        return CodebuffError(
+            f"{prefix}: 429 {text}",
+            429,
+        )
+    if status == "ip_capped":
+        return CodebuffError(
+            f"{prefix}: 429 {text}",
+            429,
+        )
+    if status == "model_unavailable":
+        return CodebuffError(
+            f"{prefix}: 429 {text}",
+            429,
+        )
+    if status == "free_mode_capacity_deferred" or data.get("error") == "free_mode_capacity_deferred":
         return CodebuffError(
             f"{prefix}: 429 {text}",
             429,

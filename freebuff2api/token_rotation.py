@@ -39,13 +39,43 @@ def is_rate_limit_error(error_message: str) -> bool:
 
 
 def is_ban_error(error_message: str) -> bool:
-    """Check if an error message indicates an account/network ban (not quota).
+    """兼容旧调用：账号封禁或地区限制都算广义 ban。"""
+    return is_account_banned(error_message) or is_country_blocked(error_message)
 
-    Policy Violation 是上游模型提供商（如 OpenAI/Azure）的问题，不一定是
-    Codebuff 账号被封，因此不归入 ban。
-    """
-    lower = error_message.lower()
-    return "banned" in lower or "country_blocked" in lower
+
+def is_account_banned(error_message: str) -> bool:
+    """官方账号级封禁（status=banned）。这是真正的账号被停用。"""
+    return "banned" in error_message.lower()
+
+
+def is_country_blocked(error_message: str) -> bool:
+    """官方地区限制（status=country_blocked）。账号本身没问题，换 IP 可恢复。"""
+    return "country_blocked" in error_message.lower()
+
+
+def is_insufficient_quota(error_message: str) -> bool:
+    """官方上游负载饱和（insufficient_quota）。不是账号额度耗尽。"""
+    return "insufficient_quota" in error_message.lower()
+
+
+def is_capacity_deferred(error_message: str) -> bool:
+    """官方免费通道容量已满（free_mode_capacity_deferred）。"""
+    return "free_mode_capacity_deferred" in error_message.lower()
+
+
+def is_spend_limited(error_message: str) -> bool:
+    """官方高峰时段临时限流（spend_limited）。所有账号都受影响，不应轮换。"""
+    return "spend_limited" in error_message.lower()
+
+
+def is_ip_capped(error_message: str) -> bool:
+    """官方出口 IP 人数上限（ip_capped）。换账号无效，换 IP 才有效。"""
+    return "ip_capped" in error_message.lower()
+
+
+def is_model_unavailable(error_message: str) -> bool:
+    """官方模型暂时不可用（model_unavailable）。应切换模型，不应轮换账号。"""
+    return "model_unavailable" in error_message.lower()
 
 
 def is_policy_violation_error(error_message: str) -> bool:
@@ -450,6 +480,10 @@ class RotationState:
             self._last_429_time = datetime.now(SHA_TZ).strftime("%Y-%m-%d %H:%M")
             self._last_429_account = failed
             retry_ms = self._last_429_info.get("retry_after_ms", 0)
+            if retry_ms <= 0:
+                # 429 没有携带 retryAfterMs 时（例如 insufficient_quota 二次判定），
+                # 给一个较短的冷却，避免同一请求周期内立刻复用刚失败的账号。
+                retry_ms = 60_000
             # Prefer the model carried in the 429 payload; fall back to the
             # model that was being requested (passed by the pool).
             cooldown_model = self._last_429_info.get("model") or model

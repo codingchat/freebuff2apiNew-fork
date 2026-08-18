@@ -127,7 +127,8 @@ class PoolClient:
 
 
 class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_switch_model_deletes_active_upstream_session_before_create(self):
+    @patch("freebuff2api.codebuff._ad_chain_due", return_value=True)
+    async def test_switch_model_deletes_active_upstream_session_before_create(self, _mock_ads_due):
         client = SwitchModelClient()
         manager = SessionManager(
             client,

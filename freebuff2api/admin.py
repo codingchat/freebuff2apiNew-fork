@@ -506,7 +506,11 @@ async def rotation_mode_status(request: Request) -> dict[str, Any]:
     accounts: CodebuffAccountPool = request.app.state.accounts
     return _api_ok({
         "mode": accounts.rotation_mode,
-        "premium_banned_until": accounts._premium_banned_until,
+        "premium_banned_until": (
+            accounts._premium_banned_until
+            if accounts._premium_banned_until > time.time()
+            else 0
+        ),
         "options": [
             {"value": "throughput", "label": "并发", "desc": "所有账号同时扇出，吞吐最大，风险最高"},
             {"value": "balanced", "label": "半并发", "desc": "free 扇出，premium 同时只用 1 个账号轮换"},

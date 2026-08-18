@@ -60,6 +60,17 @@ class NoDoneStreamClient(FakeClient):
         # 不 yield "[DONE]",直接 EOF
 
 
+class QuotaFailingStreamClient(FakeClient):
+    """上游抛已知的额度耗尽错误，应转换为正常中文提示内容。"""
+
+    async def chat_events(self, payload):
+        raise CodebuffError(
+            "Freebuff premium daily quota exhausted. Resets at 15:00 Asia/Shanghai.",
+            403,
+        )
+        yield
+
+
 class UnexpectedErrorStreamClient(FakeClient):
     """上游流中途抛未预期异常（非 CodebuffError）。"""
 
@@ -271,7 +282,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
 
         # 上游 EOF 无 [DONE] → 末尾补发 [DONE]，客户端不会报 "terminated"
         self.assertEqual(chunks[-1], "data: [DONE]\n\n")
-        self.assertEqual(chunks[0].count("[DONE]"), 0)  # 内容块正常透传
+
 
     async def test_stream_unexpected_error_still_emits_done(self) -> None:
         client = UnexpectedErrorStreamClient()

@@ -73,6 +73,7 @@ export interface AccountStatus {
   blocked: boolean
   block_remaining: number
   failure_count: number
+  invalid_reason: string
   is_current: boolean
   last_429: Record<string, unknown>
 }

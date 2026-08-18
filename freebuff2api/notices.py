@@ -1,0 +1,192 @@
+"""把上游错误/限流状态翻译成客户端可读的中文提示。
+
+设计目标：
+- 已知的**上游业务状态**（额度耗尽、高峰限流、地区限制、会话失效等）返回
+  ``notice_for_error`` 非 None，由上层以**正常 200 响应**把提示作为模型内容
+  返回给客户端（客户端不会当成错误，但用户能看到提示）。
+- 未知错误返回 None，上层继续走标准错误响应；``describe_error`` 提供中文描述，
+  附带原始英文信息，方便用户/管理员排查。
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from .token_rotation import parse_429_info
+
+NOTICE_PREFIX = "中转提示："
+
+UNLIMITED_HINT = (
+    "可以先切换到无限模型（deepseek/deepseek-v4-flash 或 mimo/mimo-v2.5）"
+    "继续使用。"
+)
+
+
+def _rate_limit_notice(message: str, model: str = "") -> str:
+    """官方 rate_limited：premium/limited 每日额度耗尽。"""
+    info = parse_429_info(message)
+    reset_at = info.get("reset_at_sha") or "北京时间 15:00"
+    if info.get("model"):
+        model_part = f"涉及模型：{info.get('model')}。"
+    elif model:
+        model_part = f"涉及模型：{model}。"
+    else:
+        model_part = ""
+    return (
+        f"官方免费额度已用完（每日限额）。{model_part}"
+        f"预计恢复时间：{reset_at}。{UNLIMITED_HINT}"
+    )
+
+
+def notice_for_error(error: Exception, model: str = "") -> str | None:
+    """返回可当作正常模型回复内容返回给客户端的中文提示；未知错误返回 None。"""
+    original = str(error)
+    lower = original.lower()
+    status_code = getattr(error, "status_code", 0)
+
+    # 我们自己的全局封禁闸门（某个账号被官方封禁后停止所有模型）
+    if "disabled until the next 15:00" in lower:
+        return (
+            NOTICE_PREFIX
+            + "检测到账号被官方封禁，服务已停止所有模型请求，"
+            + "预计北京时间 15:00 自动恢复；请到 Token 页面检查被标记的账号。"
+        )
+    if "quota exhausted" in lower:
+        return (
+            NOTICE_PREFIX
+            + "premium 免费额度已用完，预计北京时间 15:00 自动恢复。"
+            + UNLIMITED_HINT
+        )
+    if "rate_limited" in lower:
+        return NOTICE_PREFIX + _rate_limit_notice(original, model)
+    if "spend_limited" in lower:
+        return (
+            NOTICE_PREFIX
+            + "官方高峰时段限流中（上游模型价格翻倍，官方暂停消耗免费额度），"
+            + "高峰结束后自动恢复；正在运行的任务不受影响。"
+            + UNLIMITED_HINT
+        )
+    if "ip_capped" in lower:
+        return (
+            NOTICE_PREFIX
+            + "当前出口 IP 使用免费服务的用户数已达官方上限，"
+            + "请稍等几分钟后重试；若频繁出现，建议更换出口节点。"
+        )
+    if "model_unavailable" in lower:
+        return (
+            NOTICE_PREFIX
+            + "当前模型暂不可用（官方限制），请切换到其他模型后重试。"
+        )
+    if "banned" in lower:
+        return (
+            NOTICE_PREFIX
+            + "当前账号已被官方暂停，无法继续使用免费额度，请更换账号。"
+        )
+    if "country_blocked" in lower:
+        return (
+            NOTICE_PREFIX
+            + "当前出口 IP 所在地区不支持官方免费模式，请更换到美国节点后重试。"
+        )
+    if "premium_slot_taken" in lower:
+        return (
+            NOTICE_PREFIX
+            + "当前账号的 premium 通道被另一个实例占用，"
+            + "服务已尝试释放旧会话，请重新发送一次。"
+        )
+    if "session_limit_reached" in lower:
+        return (
+            NOTICE_PREFIX
+            + "官方会话并发达到上限，请稍后重试。"
+        )
+    if "free_mode_capacity_deferred" in lower or (
+        "capacity" in lower and status_code == 429
+    ):
+        return (
+            NOTICE_PREFIX
+            + "官方免费通道当前容量已满，请稍后重试或切换模型。"
+        )
+    if "waiting_room_required" in lower or status_code == 428:
+        return (
+            NOTICE_PREFIX
+            + "上游会话已失效（官方等待室），服务会自动重建会话，"
+            + "请重新发送一次。"
+        )
+    if "session_expired" in lower or status_code == 410:
+        return (
+            NOTICE_PREFIX
+            + "上游会话已过期，服务会自动重建会话，请重新发送一次。"
+        )
+    if "session_superseded" in lower:
+        return (
+            NOTICE_PREFIX
+            + "上游会话被新实例占用，服务会自动重建会话，请重新发送一次。"
+        )
+    if "session_model_mismatch" in lower:
+        return (
+            NOTICE_PREFIX
+            + "上游会话模型不匹配，服务会自动重建会话，请重试一次。"
+        )
+    if "policy violation" in lower:
+        return (
+            NOTICE_PREFIX
+            + "当前模型触发官方上游策略限制（Policy Violation，常见于 luna），"
+            + "已临时停用该模型；请切换到其他模型，"
+            + "或等北京时间 15:00 后自动恢复。"
+        )
+    if (
+        "provider usage" in lower
+        or "refill" in lower
+        or "out of credits" in lower
+        or status_code == 402
+    ):
+        return (
+            NOTICE_PREFIX
+            + "Freebuff 官方上游额度已用完（Provider usage error），"
+            + "这是官方的问题，不是你的账号；请稍后重试。"
+        )
+    if "insufficient_quota" in lower:
+        return (
+            NOTICE_PREFIX
+            + "官方免费通道当前负载较高（insufficient_quota），"
+            + "请稍后重试或切换模型。"
+        )
+    if "empty stream" in lower or "空流" in lower:
+        return (
+            NOTICE_PREFIX
+            + "上游返回空响应，通常是免费额度状态异常或会话过长导致；"
+            + "请稍后重试或切换模型。"
+        )
+    if "session is not active" in lower:
+        return (
+            NOTICE_PREFIX
+            + "官方会话未激活，可能是额度状态异常或账号受限；"
+            + "请稍后重试或切换模型。"
+        )
+    return None
+
+
+def describe_error(error: Exception) -> str:
+    """给未知/中转自身错误提供中文描述，供标准错误响应使用。"""
+    original = str(error)
+    lower = original.lower()
+
+    if "network error" in lower or "network error" in original.lower():
+        return "中转服务无法连接官方上游服务器，请检查服务端网络/代理配置，或稍后重试。"
+    if "FREEBUFF_TOKEN or CODEBUFF_TOKEN is required" in original:
+        return "中转服务未配置上游账号 Token（FREEBUFF_TOKEN），请联系管理员在管理页配置。"
+    if "no account available" in lower:
+        return "中转服务当前没有可用账号，请稍后重试或联系管理员。"
+    if "request body too large" in lower or "请求体过大" in original:
+        return "请求体超过中转服务限制，请减小上下文/附件大小。"
+    if "520" in original:
+        return "官方上游服务器崩溃（520），与请求内容无关；请稍后重试或切换模型。"
+    if "session is not active" in lower:
+        return "官方未激活会话，可能是额度状态异常或账号受限，请稍后重试或切换模型。"
+    return "中转服务遇到未分类错误，请稍后重试；若持续出现，请把原始信息发给管理员排查。"
+
+
+def truncate_detail(text: str, limit: int = 300) -> str:
+    """截断原始错误信息，避免过长的英文原文撑爆客户端显示。"""
+    text = text.strip().replace("\n", " ")
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"

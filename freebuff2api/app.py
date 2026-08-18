@@ -27,6 +27,7 @@ from .codebuff import (
 )
 from .config import Settings, load_settings
 from .logging_config import configure_logging, redact_headers, render_debug
+from .notices import describe_error, notice_for_error, truncate_detail
 from .token_rotation import parse_429_info
 from .openai_compat import (
     CompletionAccumulator,
@@ -160,42 +161,85 @@ def _check_anthropic_auth(request: Request, *, require_configured: bool = False)
 
 
 def _friendly_upstream_message(error: Exception) -> str:
-    """把上游错误包一层客户端可读的解释。
-
-    空流/限流/风控这些错误如果只透传原始英文，客户端会一脸懵并且可能
-    无限重试。这里保留原始信息，同时给出可操作的排查方向。
-    """
+    """把错误包一层客户端可读的中文解释，并保留原始英文详情。"""
     original = str(error)
-    lower = original.lower()
-    if "empty stream" in lower or "空流" in original:
-        hint = (
-            "上游返回空流：通常表示该模型/账号的免费额度已耗尽、出口 IP 被风控、"
-            "或账号被临时限制。建议稍后重试、切换模型，或更换账号/节点。"
-        )
-    elif "policy violation" in lower:
-        hint = (
-            "上游策略违规：该账号已被模型提供商策略风控，可能是账号级限制，"
-            "通常需等待次日重置或更换账号。"
-        )
-    elif "country_blocked" in lower or "banned" in lower:
-        hint = "上游判定当前账号或出口地区受限：请更换美国出口节点，或更换账号。"
-    elif "provider usage" in lower or "refill" in lower:
-        hint = "Freebuff 官方上游 credit 耗尽，这是官方的问题，不是你的账号。请稍后重试。"
-    elif "429" in original or "rate" in lower or "capacity" in lower:
-        hint = "上游限流/容量已满：请稍后重试，或切换到其他模型/账号。"
-    elif "waiting_room_required" in lower or "428" in original:
-        hint = "上游 session 已失效：服务会自动重建，重试一次通常可恢复。"
-    elif "session_model_mismatch" in lower or "session_superseded" in lower:
-        hint = "上游 session 状态冲突：请重试，服务会尝试重建 session。"
-    else:
-        hint = "上游返回错误：请检查账号额度、出口 IP 与模型可用性后重试。"
-    return f"{original}（{hint}）"
+    return f"{describe_error(error)}（原始信息：{truncate_detail(original)}）"
 
 
 def _wrapped_error(error: Exception) -> CodebuffError | Exception:
     if isinstance(error, CodebuffError):
         return CodebuffError(_friendly_upstream_message(error), error.status_code)
     return error
+
+
+def _openai_notice_response(model: str, text: str) -> dict[str, Any]:
+    """构造正常的 OpenAI chat.completion 响应，内容为中文中转提示。"""
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def _openai_notice_stream(model: str, text: str):
+    """生成与 OpenAI SSE 兼容的中文提示流（[DONE] 由调用方补发）。"""
+    message_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+    base = {
+        "id": message_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+    }
+    yield encode_sse(
+        {
+            **base,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": ""},
+                    "finish_reason": None,
+                }
+            ],
+        }
+    )
+    yield encode_sse(
+        {
+            **base,
+            "choices": [
+                {"index": 0, "delta": {"content": text}, "finish_reason": None}
+            ],
+        }
+    )
+    yield encode_sse(
+        {
+            **base,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+    )
+
+
+def _anthropic_notice_response(model: str, text: str) -> dict[str, Any]:
+    """构造正常的 Anthropic Messages 响应，内容为中文中转提示。"""
+    return {
+        "id": f"msg_{uuid.uuid4().hex[:24]}",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
 
 
 def _error_response(error: Exception) -> JSONResponse:
@@ -458,6 +502,10 @@ async def chat_completions(request: Request) -> Any:
             error,
             exc_info=settings.debug,
         )
+        notice = notice_for_error(error, model)
+        if notice is not None:
+            _record_request(request, api_key, model, 0, "notice", error=str(error))
+            return JSONResponse(_openai_notice_response(model, notice))
         return _error_response(error)
     except Exception as error:
         if lease is not None:
@@ -495,8 +543,15 @@ async def chat_completions(request: Request) -> Any:
         return JSONResponse(response)
     except Exception as error:
         duration_ms = int((time.time() - started) * 1000)
+        if isinstance(error, CodebuffError):
+            _handle_upstream_error(request, lease._account_index, error, model)
+            notice = notice_for_error(error, model)
+            if notice is not None:
+                _record_request(request, api_key, model, duration_ms, "notice", error=str(error))
+                return JSONResponse(_openai_notice_response(model, notice))
+        else:
+            _handle_upstream_error(request, lease._account_index, error, model)
         _record_request(request, api_key, model, duration_ms, "error", error=str(error))
-        _handle_upstream_error(request, lease._account_index, error, model)
         return _error_response(error)
     finally:
         await lease.aclose()
@@ -515,6 +570,24 @@ async def _run_heartbeat_loop(
                 await client.heartbeat(instance_id)
     except asyncio.CancelledError:
         pass
+
+
+async def _upstream_lines_with_heartbeat(agen, interval: float = 15.0):
+    """包装上游 SSE 行迭代器：上游静默超过 interval 秒时 yield None。
+
+    调用方把 None 转换为下发给客户端的 SSE 注释心跳（``: freebuff2api heartbeat``），
+    避免 Railway/代理在首包前或长思考间隙把下游连接判定为空闲并关闭，
+    客户端表现为 ``hyper::Error(IncompleteMessage)`` / WebSocket Network IO error。
+    """
+    while True:
+        try:
+            line = await asyncio.wait_for(agen.__anext__(), timeout=interval)
+        except StopAsyncIteration:
+            break
+        except asyncio.TimeoutError:
+            yield None
+        else:
+            yield line
 
 
 async def _stream_openai_chunks(
@@ -536,12 +609,19 @@ async def _stream_openai_chunks(
     instance_id = (payload.get("codebuff_metadata") or {}).get("freebuff_instance_id", "")
     heartbeat_task = asyncio.create_task(_run_heartbeat_loop(client, instance_id, heartbeat_active))
     done_sent = False
+    recorded = False
     chunk_yielded = False
     retried = False
     try:
         while True:
             try:
-                async for line in client.chat_events(payload):
+                async for item in _upstream_lines_with_heartbeat(
+                    client.chat_events(payload), 15.0
+                ):
+                    if item is None:
+                        yield b": freebuff2api heartbeat\n\n"
+                        continue
+                    line = item
                     data = decode_sse_data(line)
                     if data is None:
                         continue
@@ -617,21 +697,34 @@ async def _stream_openai_chunks(
             error,
             exc_info=settings.debug,
         )
-        if api_key:
-            duration_ms = int((time.time() - started) * 1000)
-            _record_request(request, api_key, payload.get("model", ""), duration_ms, "error", error=str(error))
-        yield encode_sse(
-            {
-                "error": {
-                    "message": _friendly_upstream_message(error),
-                    "upstream_message": str(error),
-                    "type": "upstream_error",
-                    "code": "codebuff_error",
+        stream_model = payload.get("model", "")
+        notice = notice_for_error(error, stream_model)
+        if notice is not None:
+            if api_key:
+                duration_ms = int((time.time() - started) * 1000)
+                _record_request(request, api_key, stream_model, duration_ms, "notice", error=str(error))
+            recorded = True
+            for chunk in _openai_notice_stream(stream_model, notice):
+                yield chunk
+            yield encode_sse("[DONE]")
+            done_sent = True
+        else:
+            if api_key:
+                duration_ms = int((time.time() - started) * 1000)
+                _record_request(request, api_key, stream_model, duration_ms, "error", error=str(error))
+            recorded = True
+            yield encode_sse(
+                {
+                    "error": {
+                        "message": _friendly_upstream_message(error),
+                        "upstream_message": str(error),
+                        "type": "upstream_error",
+                        "code": "codebuff_error",
+                    }
                 }
-            }
-        )
-        yield encode_sse("[DONE]")
-        done_sent = True
+            )
+            yield encode_sse("[DONE]")
+            done_sent = True
     except Exception as error:
         # 兜底：任何未预期异常（上游断流/解析异常等）也发 error + [DONE]，
         # 避免生成器裸抛导致连接直接关闭（客户端报 "terminated / other side closed"）。
@@ -644,6 +737,7 @@ async def _stream_openai_chunks(
         if api_key:
             duration_ms = int((time.time() - started) * 1000)
             _record_request(request, api_key, payload.get("model", ""), duration_ms, "error", error=str(error))
+        recorded = True
         yield encode_sse(
             {
                 "error": {
@@ -662,7 +756,7 @@ async def _stream_openai_chunks(
         # 否则客户端等 [DONE] 等到连接关闭报 "terminated"。
         if not done_sent:
             yield encode_sse("[DONE]")
-        if api_key:
+        if api_key and not recorded:
             duration_ms = int((time.time() - started) * 1000)
             _record_request(request, api_key, payload.get("model", ""), duration_ms, "success")
         _schedule_finalize_run(client, run, message_id)
@@ -1033,6 +1127,9 @@ async def anthropic_messages(request: Request) -> Any:
             error,
             exc_info=settings.debug,
         )
+        notice = notice_for_error(error, model)
+        if notice is not None:
+            return JSONResponse(_anthropic_notice_response(model, notice))
         status_code = getattr(error, "status_code", 502)
         return JSONResponse(
             status_code=status_code,
@@ -1078,8 +1175,15 @@ async def anthropic_messages(request: Request) -> Any:
         return JSONResponse(response)
     except Exception as error:
         duration_ms = int((time.time() - started) * 1000)
+        if isinstance(error, CodebuffError):
+            _handle_upstream_error(request, lease._account_index, error, model)
+            notice = notice_for_error(error, model)
+            if notice is not None:
+                _record_request(request, api_key, model, duration_ms, "notice", error=str(error))
+                return JSONResponse(_anthropic_notice_response(model, notice))
+        else:
+            _handle_upstream_error(request, lease._account_index, error, model)
         _record_request(request, api_key, model, duration_ms, "error", error=str(error))
-        _handle_upstream_error(request, lease._account_index, error, model)
         status_code = getattr(error, "status_code", 500)
         return JSONResponse(
             status_code=status_code,
@@ -1112,6 +1216,7 @@ async def _stream_anthropic_events(
     state = AnthropicStreamState(model=requested_model or payload.get("model", ""))
     _ping_active = True
     finalized = False
+    recorded = False
     retried = False
 
     async def _ping_loop() -> None:
@@ -1193,11 +1298,40 @@ async def _stream_anthropic_events(
             error,
             exc_info=settings.debug,
         )
-        error_payload = anthropic_error_payload(_friendly_upstream_message(error))
-        yield anthropic_sse_encode("error", error_payload)
-        # 错误后也补 finalize（message_stop），保证 Anthropic 客户端能收尾
-        for sse_line in _emit_finalize():
-            yield sse_line
+        stream_model = requested_model or payload.get("model", "")
+        notice = notice_for_error(error, stream_model)
+        if notice is not None:
+            if api_key:
+                duration_ms = int((time.time() - started) * 1000)
+                _record_request(request, api_key, stream_model, duration_ms, "notice", error=str(error))
+            recorded = True
+            chunk = {
+                "id": f"msg_{uuid.uuid4().hex[:24]}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": stream_model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": notice},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+            for event_type, event_data in state.consume_chunk(chunk):
+                yield anthropic_sse_encode(event_type, event_data)
+            for sse_line in _emit_finalize():
+                yield sse_line
+        else:
+            if api_key:
+                duration_ms = int((time.time() - started) * 1000)
+                _record_request(request, api_key, stream_model, duration_ms, "error", error=str(error))
+            recorded = True
+            error_payload = anthropic_error_payload(_friendly_upstream_message(error))
+            yield anthropic_sse_encode("error", error_payload)
+            # 错误后也补 finalize（message_stop），保证 Anthropic 客户端能收尾
+            for sse_line in _emit_finalize():
+                yield sse_line
     except Exception as error:
         if account_lease is not None:
             _handle_upstream_error(request, account_lease._account_index, error, requested_model or payload.get("model", ""))
@@ -1205,6 +1339,10 @@ async def _stream_anthropic_events(
             "anthropic stream unexpected error run_id=%s",
             run.run_id,
         )
+        if api_key:
+            duration_ms = int((time.time() - started) * 1000)
+            _record_request(request, api_key, requested_model or payload.get("model", ""), duration_ms, "error", error=str(error))
+        recorded = True
         error_payload = anthropic_error_payload(_friendly_upstream_message(error))
         yield anthropic_sse_encode("error", error_payload)
         for sse_line in _emit_finalize():
@@ -1214,7 +1352,7 @@ async def _stream_anthropic_events(
         # 否则 Anthropic 客户端悬挂/报 "terminated / other side closed"。
         for sse_line in _emit_finalize():
             yield sse_line
-        if api_key:
+        if api_key and not recorded:
             duration_ms = int((time.time() - started) * 1000)
             _record_request(request, api_key, payload.get("model", ""), duration_ms, "success")
         heartbeat_active.clear()

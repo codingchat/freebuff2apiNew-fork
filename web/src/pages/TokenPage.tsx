@@ -23,6 +23,7 @@ interface MergedAccount extends TokenRow {
   status: AccountStatus["status"]
   block_remaining: number
   failure_count: number
+  invalid_reason: string
   is_current: boolean
   last_429: Record<string, unknown>
 }
@@ -34,6 +35,16 @@ const STATUS_META: Record<AccountStatus["status"], { label: string; variant: Bad
   blocked: { label: "限流中", variant: "destructive" },
   invalid: { label: "失效", variant: "secondary" },
   checking: { label: "验证中", variant: "outline" },
+}
+
+function statusMeta(t: MergedAccount): { label: string; variant: BadgeVariant } {
+  if (t.status === "invalid" && t.invalid_reason === "banned") {
+    return { label: "已封禁", variant: "destructive" }
+  }
+  if (t.status === "invalid" && t.invalid_reason === "forbidden") {
+    return { label: "已禁用", variant: "destructive" }
+  }
+  return STATUS_META[t.status]
 }
 
 function formatSeconds(sec: number): string {
@@ -69,7 +80,7 @@ function RotationModeCard() {
           <span className="text-sm font-medium">账号轮换模式</span>
           {modeData?.premium_banned_until ? (
             <Badge variant="destructive" className="text-xs">
-              premium 已停用 · {new Date(modeData.premium_banned_until * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 恢复
+              账号封禁 · {new Date(modeData.premium_banned_until * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 恢复
             </Badge>
           ) : null}
         </div>
@@ -347,10 +358,15 @@ export default function TokenPage() {
       status: acc?.status ?? "active",
       block_remaining: acc?.block_remaining ?? 0,
       failure_count: acc?.failure_count ?? 0,
+      invalid_reason: acc?.invalid_reason ?? "",
       is_current: acc?.is_current ?? false,
       last_429: acc?.last_429 ?? {},
     }
   })
+
+  const hasBannedAccount = merged.some(
+    (t) => t.status === "invalid" && t.invalid_reason === "banned"
+  )
 
   const liveRemaining = (account: MergedAccount): number =>
     Math.max(0, account.block_remaining - (now - fetchedAt) / 1000)
@@ -387,7 +403,18 @@ export default function TokenPage() {
       <RequestLimitCard />
       <ToolLimitCard />
 
-      {rotation?.all_blocked && (
+      {hasBannedAccount && (
+        <Alert variant="destructive">
+          <Ban className="h-4 w-4" />
+          <AlertTitle>检测到账号已被官方封禁</AlertTitle>
+          <AlertDescription>
+            服务已停止所有模型请求，预计北京时间 15:00 自动恢复。请检查下方标记为「已封禁」的账号，
+            该账号建议取出用于其他用途，避免连带影响其他账号。
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {rotation?.all_blocked && !hasBannedAccount && (
         <Alert variant="destructive">
           <Ban className="h-4 w-4" />
           <AlertTitle>全部账号限流</AlertTitle>
@@ -445,7 +472,7 @@ export default function TokenPage() {
       )}
 
       {merged.map((t) => {
-        const meta = STATUS_META[t.status]
+        const meta = statusMeta(t)
         const remaining = liveRemaining(t)
         const hasLast429 = Object.keys(t.last_429).length > 0
         return (
@@ -486,6 +513,12 @@ export default function TokenPage() {
                   <span>前缀: {t.prefix}</span>
                   {t.failure_count > 0 && t.status !== "invalid" && (
                     <span className="text-amber-600">失败 {t.failure_count}/3</span>
+                  )}
+                  {t.status === "invalid" && t.invalid_reason === "banned" && (
+                    <span className="font-medium text-destructive">账号已被官方封禁 · 15:00 恢复</span>
+                  )}
+                  {t.status === "invalid" && t.invalid_reason === "forbidden" && (
+                    <span className="text-destructive">账号已被禁用（403）</span>
                   )}
                   {hasLast429 && (
                     <span className="text-destructive/80">

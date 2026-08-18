@@ -74,6 +74,129 @@ class RotationModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 403)
         await pool.aclose()
 
+    async def test_banned_marks_invalid_and_does_not_rotate(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+
+        pool.handle_error(
+            0,
+            "Codebuff request failed: account banned - Freebuff account banned",
+            status_code=403,
+            model="deepseek/deepseek-v4-pro",
+        )
+        self.assertEqual(pool._invalid_reasons[0], "banned")
+        self.assertGreater(pool._premium_banned_until, 0)
+        self.assertIsNone(pool._next_available_index("deepseek/deepseek-v4-pro"))
+
+        with self.assertRaises(CodebuffError):
+            await pool.acquire_session("deepseek/deepseek-v4-pro")
+        await pool.aclose()
+
+    async def test_acquire_session_rate_limited_tries_next_account(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+        pool._premium_index = 0
+
+        async def fake_acquire(model, messages=None):
+            raise CodebuffError(
+                'Codebuff request failed: 429 {"status":"rate_limited","retryAfterMs":21600000}',
+                429,
+            )
+
+        for account in pool._accounts:
+            account.sessions.acquire_session = fake_acquire  # type: ignore[method-assign]
+
+        with self.assertRaises(CodebuffError):
+            await pool.acquire_session("deepseek/deepseek-v4-pro")
+
+        # 第一个账号 429 后应被冷却，并轮换到第二个账号（第二个也 429 后同样被冷却）
+        self.assertTrue(pool._rotation.is_blocked(0, "deepseek/deepseek-v4-pro"))
+        self.assertTrue(pool._rotation.is_blocked(1, "deepseek/deepseek-v4-pro"))
+        await pool.aclose()
+
+    async def test_acquire_session_insufficient_quota_does_not_try_next_account(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+        pool._premium_index = 0
+
+        async def fake_acquire(model, messages=None):
+            raise CodebuffError("Codebuff chat failed: 429 insufficient_quota", 429)
+
+        for account in pool._accounts:
+            account.sessions.acquire_session = fake_acquire  # type: ignore[method-assign]
+
+        with self.assertRaises(CodebuffError):
+            await pool.acquire_session("deepseek/deepseek-v4-pro")
+
+        # 第一次上游拥堵：不轮换、不冷却账号，客户端看到拥堵提示即可
+        self.assertEqual(pool._rotation.status_of(0), "active")
+        self.assertFalse(pool._rotation.is_blocked(0, "deepseek/deepseek-v4-pro"))
+        await pool.aclose()
+
+    async def test_country_blocked_keeps_account_active_and_does_not_rotate(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+        pool._premium_index = 0
+
+        pool.handle_error(
+            0,
+            "Freebuff country_blocked: {}",
+            status_code=403,
+            model="deepseek/deepseek-v4-pro",
+        )
+        self.assertEqual(pool._invalid_reasons.get(0, ""), "")
+        self.assertEqual(pool._rotation.status_of(0), "active")
+        # 不轮换：仍返回原账号（IP 问题换账号无用）
+        self.assertEqual(pool._next_available_index("deepseek/deepseek-v4-pro"), 0)
+        await pool.aclose()
+
+    async def test_insufficient_quota_first_strike_no_rotate_second_rotates(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+        pool._premium_index = 0
+
+        pool.handle_error(
+            0,
+            "Codebuff chat failed: 429 insufficient_quota",
+            status_code=429,
+            model="deepseek/deepseek-v4-pro",
+        )
+        # 第一次：只提示上游拥堵，不轮换
+        self.assertEqual(pool._next_available_index("deepseek/deepseek-v4-pro"), 0)
+
+        pool.handle_error(
+            0,
+            "Codebuff chat failed: 429 insufficient_quota",
+            status_code=429,
+            model="deepseek/deepseek-v4-pro",
+        )
+        # 连续第二次：按额度耗尽处理，轮换到下一个账号
+        self.assertEqual(pool._next_available_index("deepseek/deepseek-v4-pro"), 1)
+        await pool.aclose()
+
+    async def test_spend_limited_does_not_rotate(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+        pool._premium_index = 0
+
+        pool.handle_error(
+            0,
+            "Freebuff session spend_limited: 429 {}",
+            status_code=429,
+            model="deepseek/deepseek-v4-pro",
+        )
+        # 高峰限流是所有账号共同面对的上游状态，不轮换
+        self.assertEqual(pool._rotation.status_of(0), "active")
+        self.assertEqual(pool._next_available_index("deepseek/deepseek-v4-pro"), 0)
+        await pool.aclose()
+
+    async def test_unknown_403_marks_invalid_with_forbidden_reason(self) -> None:
+        pool = CodebuffAccountPool(_settings(mode="balanced"))
+
+        pool.handle_error(
+            0,
+            "Codebuff chat stream error: Turn execution failed reason=auth_failed",
+            status_code=403,
+            model="deepseek/deepseek-v4-pro",
+        )
+        self.assertEqual(pool._invalid_reasons[0], "forbidden")
+        self.assertEqual(pool._rotation.status_of(0), "invalid")
+        await pool.aclose()
+
     async def test_conservative_unlimited_uses_only_first_account(self) -> None:
         pool = CodebuffAccountPool(_settings(mode="conservative"))
 
