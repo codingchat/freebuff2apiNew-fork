@@ -575,24 +575,6 @@ async def _run_heartbeat_loop(
         pass
 
 
-async def _upstream_lines_with_heartbeat(agen, interval: float = 15.0):
-    """包装上游 SSE 行迭代器：上游静默超过 interval 秒时 yield None。
-
-    调用方把 None 转换为下发给客户端的 SSE 注释心跳（``: freebuff2api heartbeat``），
-    避免 Railway/代理在首包前或长思考间隙把下游连接判定为空闲并关闭，
-    客户端表现为 ``hyper::Error(IncompleteMessage)`` / WebSocket Network IO error。
-    """
-    while True:
-        try:
-            line = await asyncio.wait_for(agen.__anext__(), timeout=interval)
-        except StopAsyncIteration:
-            break
-        except asyncio.TimeoutError:
-            yield None
-        else:
-            yield line
-
-
 async def _stream_openai_chunks(
     request: Request,
     payload: dict[str, Any],
@@ -618,13 +600,7 @@ async def _stream_openai_chunks(
     try:
         while True:
             try:
-                async for item in _upstream_lines_with_heartbeat(
-                    client.chat_events(payload), 15.0
-                ):
-                    if item is None:
-                        yield b": freebuff2api heartbeat\n\n"
-                        continue
-                    line = item
+                async for line in client.chat_events(payload):
                     data = decode_sse_data(line)
                     if data is None:
                         continue
