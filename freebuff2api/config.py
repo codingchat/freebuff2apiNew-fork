@@ -34,6 +34,25 @@ GEO_FALLBACK: dict[str, str] = {
     "countryCode": "US",
 }
 
+
+def _coerce_timezone(value: object) -> str:
+    """把任意时区值统一成 IANA 时区字符串。"""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return GEO_FALLBACK["timezone"]
+    for attr in ("id", "key", "name"):
+        v = getattr(value, attr, None)
+        if isinstance(v, str) and v:
+            return v
+    if isinstance(value, dict):
+        for key in ("id", "key", "name"):
+            v = value.get(key)
+            if isinstance(v, str) and v:
+                return v
+    return str(value)
+
+
 _last_geo: dict[str, str] = {}
 
 
@@ -63,14 +82,38 @@ def _locale_for_country(country_code: str) -> str:
     return "en-US"
 
 
-def detect_geo(timeout: float = 4.0) -> dict[str, str]:
+def _env_proxy_url() -> str | None:
+    """从环境变量构造代理 URL（用于启动时检测时区也走代理）。"""
+    if not _bool("FREEBUFF_PROXY_ENABLED", False):
+        return None
+    host = os.getenv("FREEBUFF_PROXY_HOST", "").strip()
+    if not host:
+        return None
+    proxy_type = os.getenv("FREEBUFF_PROXY_TYPE", "socks5").strip() or "socks5"
+    port = _int("FREEBUFF_PROXY_PORT", 1080)
+    username = os.getenv("FREEBUFF_PROXY_USERNAME", "").strip()
+    password = os.getenv("FREEBUFF_PROXY_PASSWORD", "").strip()
+    auth = f"{username}:{password}@" if username else ""
+    return f"{proxy_type}://{auth}{host}:{port}"
+
+
+def detect_geo(timeout: float = 4.0, proxy: str | None = None) -> dict[str, str]:
     """Detect server public-IP geo (timezone/locale/country) via free IP APIs.
 
     Probe order: ipinfo.io first (observed most reliable on Railway), then
     ipwho.is, then ipapi.co (free tier is often 429 rate-limited).
     Never raises; falls back to GEO_FALLBACK when all probes fail.
+    ``proxy`` 指定后，时区检测会走代理出口 IP，保证与上游 chat/session 一致。
     """
     global _last_geo
+    opener = None
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({
+                "http": proxy,
+                "https": proxy,
+            })
+        )
     for url in (
         "https://ipinfo.io/json",
         "https://ipwho.is/",
@@ -84,7 +127,12 @@ def detect_geo(timeout: float = 4.0) -> dict[str, str]:
                     "User-Agent": "freebuff2api/1.0",
                 },
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if opener is not None:
+                with opener.open(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            else:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
                 data = json.loads(resp.read().decode("utf-8"))
             if url.startswith("http://ip-api.com"):
                 if data.get("status") != "success":
@@ -97,7 +145,7 @@ def detect_geo(timeout: float = 4.0) -> dict[str, str]:
                 cc = data.get("country_code") or data.get("country") or "US"
                 country = data.get("country_name") or data.get("country") or GEO_FALLBACK["country"]
             geo = {
-                "timezone": timezone,
+                "timezone": _coerce_timezone(timezone),
                 "locale": _locale_for_country(cc),
                 "country": country,
                 "countryCode": cc,
@@ -125,11 +173,14 @@ def last_geo_info() -> dict[str, str]:
 
 
 def refresh_geo(settings: Settings) -> dict[str, str]:
-    """Re-detect geo and apply to a live Settings instance (admin UI refresh)."""
-    geo = detect_geo()
+    """Re-detect geo and apply to a live Settings instance (admin UI refresh).
+
+    设置界面刷新时走当前 Settings 的代理，确保时区与代理出口一致。
+    """
+    geo = detect_geo(proxy=settings.upstream_proxy_url)
     # Settings is frozen; object.__setattr__ is the intended escape hatch for
     # runtime-updated admin fields (same pattern as proxy/token settings).
-    object.__setattr__(settings, "timezone", geo["timezone"])
+    object.__setattr__(settings, "timezone", _coerce_timezone(geo["timezone"]))
     object.__setattr__(settings, "locale", geo["locale"])
     try:
         write_env_values(
@@ -249,11 +300,14 @@ def load_settings() -> Settings:
     timezone = os.getenv("FREEBUFF_TIMEZONE")
     locale = os.getenv("FREEBUFF_LOCALE")
     if not timezone or not locale:
-        geo = detect_geo()
+        geo = detect_geo(proxy=_env_proxy_url())
         if not timezone:
             timezone = geo["timezone"]
         if not locale:
             locale = geo["locale"]
+
+    timezone = _coerce_timezone(timezone)
+    locale = _coerce_timezone(locale) if not isinstance(locale, str) else locale
 
     return Settings(
         codebuff_token=os.getenv("FREEBUFF_TOKEN") or os.getenv("CODEBUFF_TOKEN"),

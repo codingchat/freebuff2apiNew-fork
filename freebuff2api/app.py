@@ -593,6 +593,7 @@ async def _stream_openai_chunks(
     done_sent = False
     recorded = False
     chunk_yielded = False
+    finish_reason_sent = False
     chunk_log_count = 0
     retried = False
     try:
@@ -617,6 +618,27 @@ async def _stream_openai_chunks(
                                 run.run_id,
                                 message_id,
                             )
+                        if not finish_reason_sent:
+                            yield encode_sse(
+                                {
+                                    "id": message_id or f"chatcmpl-{uuid.uuid4().hex}",
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": payload.get("model", ""),
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": (
+                                                {"role": "assistant"}
+                                                if not chunk_yielded
+                                                else {}
+                                            ),
+                                            "finish_reason": "stop",
+                                        }
+                                    ],
+                                }
+                            )
+                            finish_reason_sent = True
                         yield encode_sse("[DONE]")
                         done_sent = True
                         break
@@ -627,7 +649,10 @@ async def _stream_openai_chunks(
                         fold_reasoning_in_content=settings.reasoning_in_content,
                     )
                     if chunk is not None:
-                        payload = encode_sse(chunk)
+                        for choice in chunk.get("choices") or []:
+                            if choice.get("finish_reason") is not None:
+                                finish_reason_sent = True
+                        chunk_bytes = encode_sse(chunk)
                         chunk_log_count += 1
                         if settings.debug and (
                             settings.log_stream_chunks or chunk_log_count <= 10
@@ -635,10 +660,10 @@ async def _stream_openai_chunks(
                             logger.debug(
                                 "chat stream downstream chunk #%s bytes=%s data=%s",
                                 chunk_log_count,
-                                len(payload),
+                                len(chunk_bytes),
                                 render_debug(chunk, settings.log_body_chars),
                             )
-                        yield payload
+                        yield chunk_bytes
                         chunk_yielded = True
                     elif settings.debug:
                         logger.debug(
@@ -741,6 +766,27 @@ async def _stream_openai_chunks(
         # 上游 EOF 但未发 [DONE]（免费通道长对话常见）→ 补发终止符，
         # 否则客户端等 [DONE] 等到连接关闭报 "terminated"。
         if not done_sent:
+            if not finish_reason_sent:
+                yield encode_sse(
+                    {
+                        "id": message_id or f"chatcmpl-{uuid.uuid4().hex}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": payload.get("model", ""),
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": (
+                                    {"role": "assistant"}
+                                    if not chunk_yielded
+                                    else {}
+                                ),
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    }
+                )
+                finish_reason_sent = True
             yield encode_sse("[DONE]")
         if api_key and not recorded:
             duration_ms = int((time.time() - started) * 1000)

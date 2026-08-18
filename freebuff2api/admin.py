@@ -826,10 +826,18 @@ async def save_proxy(request: Request) -> dict[str, Any]:
         "FREEBUFF_PROXY_USERNAME": proxy_username or "",
         "FREEBUFF_PROXY_PASSWORD": proxy_password or "",
     })
-    request.app.state.settings = new_settings
+    # 重建账号池：让新的代理立刻对所有 httpx 客户端生效
+    await _replace_accounts(request, new_settings)
+
+    # 用新代理重新检测时区（广告/设备指纹会用这个时区）
+    try:
+        await refresh_geo(new_settings)
+    except Exception as exc:
+        logger.warning("proxy saved but geo refresh failed: %s", exc)
+
     return _api_ok(
         {**_config_payload(new_settings, request), "persisted": not _is_vercel()},
-        "proxy config saved",
+        "proxy config saved and geo refreshed",
     )
 
 

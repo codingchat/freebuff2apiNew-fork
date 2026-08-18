@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { api } from "@/lib/api-client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -41,6 +41,7 @@ export default function SettingsPage() {
   const [testResult, setTestResult] = useState<{ ok: boolean; ip?: string; country?: string; city?: string; org?: string; latency_ms?: number; error?: string } | null>(null)
   const [testBusy, setTestBusy] = useState(false)
   const [authOpen, setAuthOpen] = useState(false)
+  const proxyFormInitialized = useRef(false)
 
   const config: ConfigPayload | null = data
 
@@ -57,6 +58,18 @@ export default function SettingsPage() {
   useEffect(() => {
     loadGeo()
   }, [loadGeo])
+
+  // 首次拿到 config 后，把已保存的代理设置回显到表单。
+  // 只在第一次填充，避免每 30s 轮询覆盖用户正在输入的内容。
+  useEffect(() => {
+    if (!config || proxyFormInitialized.current) return
+    setProxyType(config.proxy_type || "socks5")
+    setProxyHost(config.proxy_host || "")
+    setProxyPort(config.proxy_port ? String(config.proxy_port) : "1080")
+    setProxyUsername(config.proxy_username || "")
+    setProxyPassword("")
+    proxyFormInitialized.current = true
+  }, [config])
 
   const handleRefreshGeo = useCallback(async () => {
     setGeoBusy(true)

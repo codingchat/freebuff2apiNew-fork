@@ -170,7 +170,11 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         delta = first_payload["choices"][0]["delta"]
         self.assertNotIn("content", delta)
         self.assertEqual(delta["reasoning_content"], "hello")
-        self.assertEqual(chunks[1], "data: [DONE]\n\n")
+
+        # 上游 [DONE] 前没有 finish_reason 时，自动补一个 stop 结束 chunk
+        finish_payload = json.loads(chunks[-2].removeprefix("data: ").strip())
+        self.assertEqual(finish_payload["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(chunks[-1], "data: [DONE]\n\n")
 
         await asyncio.sleep(0.05)
         # 精简版（对齐 Worker 1.7.0）：finalize 不再调用 record_step/finish_run，
