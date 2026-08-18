@@ -52,7 +52,7 @@
 **新增**：
 
 - **账号轮换三模式 UI**：Token 管理页三态开关（并发/半并发/串行），默认串行；切换即时生效，无需重启
-- **请求体大小限制 UI**：Token 管理页可设置 `FREEBUFF_MAX_REQUEST_BODY_BYTES`，默认 2 MB；超限返回 413 并写入日志
+- **请求体大小限制 UI**：Token 管理页可设置 `FREEBUFF_MAX_REQUEST_BODY_BYTES`，默认 0 = 不限制；设置大于 0 时超限返回 413 并写入日志
 - **日志增强**：运行日志页新增搜索框和分类筛选（客户端请求/入站请求/出站请求）；日志时间改为北京时间；413 拒绝会写入日志
 - **模型映射本地快照**：动态模型注册表成功拉取后保存 `model_registry_snapshot.json`；GitHub/jsDelivr 不可用时从快照恢复，最后硬编码兜底
 - **0.0.63 协议对齐**：session 请求带 `x-freebuff-multi-session`；chat 移除旧版 `x-freebuff-instance-id` 头；`codebuff_metadata` 增加 `freebuff_multi_session`；`reasoning_effort` 移入 `freebuff_reasoning_effort`
@@ -166,9 +166,9 @@ FREEBUFF_ADMIN_KEY=sk-admin
 # conservative = free 也只用第 1 个账号；premium 轮换同上
 FREEBUFF_ROTATION_MODE=balanced
 
-# 📦 请求体大小上限（可选，默认 307200 = 300KB）
-# 超过该大小直接 413，避免把上游打崩
-FREEBUFF_MAX_REQUEST_BODY_BYTES=2097152
+# 📦 请求体大小上限（可选，默认 0 = 不限制）
+# 官方客户端满上下文请求体约 522KB，大小本身不是暴露特征；设为 0 则不限制
+FREEBUFF_MAX_REQUEST_BODY_BYTES=0
 ```
 
 > 💡 当前轮询账号由系统自动写入 `.env` 的 `CURRENT_TOKENNum`（无需手动配置），重启后从该账号继续轮换。
@@ -400,11 +400,13 @@ Content-Type: application/json
 | `FREEBUFF_API_KEYS` | ❌ | - | 多 API Key JSON 配置（替代单一 `FREEBUFF_API_KEY`） |
 | `FREEBUFF_MAX_REQUEST_RECORDS` | ❌ | `5000` | 请求记录内存保留上限 |
 | `FREEBUFF_ROTATION_MODE` | ❌ | `conservative` | 账号轮换模式：`throughput` / `balanced` / `conservative` |
-| `FREEBUFF_MAX_REQUEST_BODY_BYTES` | ❌ | `2097152` | 请求体大小上限（字节，默认 2 MB），超过返回 413 |
-| `FREEBUFF_MAX_TOOLS` | ❌ | `50` | 单请求工具数上限，超过只保留前 N 个（降低外来客户端指纹） |
-| `FREEBUFF_MAX_MESSAGES` | ❌ | `100` | 消息数上限，超过保留 system + 最近 N 条 |
+| `FREEBUFF_MAX_REQUEST_BODY_BYTES` | ❌ | `0` | 请求体大小上限（字节；`0` = 不限制）。官方满上下文约 522KB，大小不是暴露特征 |
+| `FREEBUFF_MAX_TOOLS` | ❌ | `100` | 单请求工具数上限，超过只保留前 N 个（降低外来客户端指纹） |
+| `FREEBUFF_MAX_MESSAGES` | ❌ | `0` | 消息数上限，`0` = 不限制；保留 system + 最近 N 条 |
 | `FREEBUFF_EMPTY_STREAM_TIMEOUT` | ❌ | `120` | 空流超时（秒），超过返回明确错误 |
 | `FREEBUFF_LOG_STREAM_CHUNKS` | ❌ | `false` | 是否逐块记录 SSE chunk（生产建议 false） |
+| `FREEBUFF_REASONING_IN_CONTENT` | ❌ | `false` | 是否把 `reasoning_content` 以 `<think>` 标签折叠进 `content`，供不渲染思考通道的客户端使用 |
+| `FREEBUFF_ACTING_USER_ID` | ❌ | - | 可选。账号自己的 FreeBuff user UUID；设置后 chat 请求会带 `x-freebuff-acting-user-id` 头（填错可能 409，默认不发送） |
 | `FREEBUFF_SESSION_ID` | ❌ | 随机 | 上游会话 ID（通常自动生成，无需设置） |
 | `FREEBUFF_SYSTEM_PROMPT_OVERRIDE` | ❌ | - | 覆盖注入的 Buffy 系统提示词（追加在真实 Buffy 提示词之后） |
 | `FREEBUFF_AD_PROVIDERS` | ❌ | `gravity,carbon` | 广告提供商顺序（逗号分隔；上游现已不接受 `zeroclick`） |

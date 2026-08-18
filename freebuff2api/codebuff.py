@@ -39,7 +39,7 @@ from .token_rotation import (
 
 logger = logging.getLogger("freebuff2api.codebuff")
 
-CODEBUFF_ACCEPT_ENCODING = "gzip, deflate"
+CODEBUFF_ACCEPT_ENCODING = "gzip, deflate, br, zstd"
 # 桌面版协议伪装（2026-08-10，对齐 pingmike2/freebuff2api-wokers 1.7.0 / issue #13）：
 # 旧版 CLI 指纹（Bun/1.3.11、Freebuff-CLI/0.0.105、旧 ai-sdk 版本号）已被上游
 # detectForeignFreebuffClient / foreign-client-signals.ts 标记，命中后强制降级到
@@ -616,6 +616,8 @@ class CodebuffClient:
             json_body=True,
             user_agent=CHAT_COMPLETIONS_USER_AGENT,
         )
+        if self.settings.acting_user_id:
+            request_headers["x-freebuff-acting-user-id"] = self.settings.acting_user_id
         try:
             async with (await self._ensure_client()).stream(
                 "POST",

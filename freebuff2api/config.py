@@ -182,6 +182,7 @@ class Settings:
     empty_stream_timeout: int = 120  # 空流超时（秒），超过后按空流错误处理
     log_stream_chunks: bool = False  # 是否逐块记录流式 chunk（生产建议关闭）
     reasoning_in_content: bool = False  # 是否把 reasoning_content 以 <think> 标签折叠进 content
+    acting_user_id: str = ""  # 可选：账号自己的 FreeBuff user id，作为 x-freebuff-acting-user-id 发送
 
     @property
     def codebuff_api_url(self) -> str:
@@ -293,6 +294,7 @@ def load_settings() -> Settings:
         empty_stream_timeout=_int("FREEBUFF_EMPTY_STREAM_TIMEOUT", 120),
         log_stream_chunks=_bool("FREEBUFF_LOG_STREAM_CHUNKS", False),
         reasoning_in_content=_bool("FREEBUFF_REASONING_IN_CONTENT", False),
+        acting_user_id=os.getenv("FREEBUFF_ACTING_USER_ID", ""),
     )
 
 
