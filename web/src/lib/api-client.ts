@@ -97,11 +97,13 @@ export const api = {
   models: () => request<ModelsResponse>("/models"),
 
   // Runtime Logs
-  logs: (params?: { since_id?: number; limit?: number; level?: string }) => {
+  logs: (params?: { since_id?: number; limit?: number; level?: string; since_min?: number; max_bytes?: number }) => {
     const sp = new URLSearchParams()
     if (params?.since_id) sp.set("since_id", String(params.since_id))
     if (params?.limit) sp.set("limit", String(params.limit))
     if (params?.level) sp.set("level", params.level)
+    if (params?.since_min) sp.set("since_min", String(params.since_min))
+    if (params?.max_bytes) sp.set("max_bytes", String(params.max_bytes))
     const qs = sp.toString()
     return request<LogsData>(`/logs${qs ? `?${qs}` : ""}`)
   },

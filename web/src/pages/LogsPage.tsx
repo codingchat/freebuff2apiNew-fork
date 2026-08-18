@@ -53,6 +53,8 @@ export default function LogsPage() {
   const [category, setCategory] = useState("")
   const [fromTime, setFromTime] = useState("")
   const [toTime, setToTime] = useState("")
+  const [copyAction, setCopyAction] = useState("")
+  const [copying, setCopying] = useState(false)
   const fetcher = useCallback(
     () => api.logs({ level: level || undefined, limit }),
     [level, limit],
@@ -97,11 +99,58 @@ export default function LogsPage() {
     )
   }
 
-  const copyAll = () => {
-    const text = items
-      .map((l) => `${l.time} ${l.level} [${l.logger}] ${l.message}`)
-      .join("\n")
-    navigator.clipboard.writeText(text)
+  const formatLog = (log: LogItem) => {
+    const detail = log.detail ? `\n${log.detail}` : ""
+    return `${log.time} ${log.level} [${log.logger}] ${log.message}${detail}`
+  }
+
+  const MAX_COPY_BYTES = 30 * 1024 * 1024
+
+  const copyText = async (text: string) => {
+    const encoded = new TextEncoder().encode(text)
+    if (encoded.byteLength > MAX_COPY_BYTES) {
+      text = `${new TextDecoder().decode(encoded.slice(0, MAX_COPY_BYTES))}\n\n[日志已达到 30MB 上限，后续内容未复制]`
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const textarea = document.createElement("textarea")
+      textarea.value = text
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand("copy")
+      textarea.remove()
+    }
+  }
+
+  const copyCurrentFiltered = async () => {
+    await copyText(items.map(formatLog).join("\n"))
+  }
+
+  const copyRecent = async (minutes: number) => {
+    const result = await api.logs({ since_min: minutes, limit: 0 })
+    await copyText((result.items || []).map(formatLog).join("\n"))
+  }
+
+  const copyAllLogs = async () => {
+    const result = await api.logs({ max_bytes: 30 * 1024 * 1024, limit: 0 })
+    await copyText((result.items || []).map(formatLog).join("\n"))
+  }
+
+  const handleCopy = async (value: string | null) => {
+    if (!value || copying) return
+    setCopyAction(value)
+    setCopying(true)
+    try {
+      if (value === "2min") await copyRecent(2)
+      else if (value === "3min") await copyRecent(3)
+      else if (value === "5min") await copyRecent(5)
+      else if (value === "current") await copyCurrentFiltered()
+      else if (value === "all") await copyAllLogs()
+    } finally {
+      setCopying(false)
+      window.setTimeout(() => setCopyAction(""), 300)
+    }
   }
 
   const clearAll = async () => {
@@ -186,10 +235,19 @@ export default function LogsPage() {
               <SelectItem value="1000">1000</SelectItem>
             </SelectContent>
           </Select>
-          <Button size="sm" variant="outline" onClick={copyAll}>
-            <Copy className="mr-1 h-4 w-4" />
-            复制
-          </Button>
+          <Select value={copyAction} onValueChange={handleCopy}>
+            <SelectTrigger className="w-36" disabled={copying}>
+              <Copy className="mr-1 h-4 w-4" />
+              <SelectValue placeholder="复制日志" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="2min">最近 2 分钟</SelectItem>
+              <SelectItem value="3min">最近 3 分钟</SelectItem>
+              <SelectItem value="5min">最近 5 分钟</SelectItem>
+              <SelectItem value="current">当前筛选结果</SelectItem>
+              <SelectItem value="all">全部（30MB 限制）</SelectItem>
+            </SelectContent>
+          </Select>
           <Button size="sm" variant="outline" onClick={refresh} disabled={loading}>
             <RefreshCw className={`mr-1 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             刷新

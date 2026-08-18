@@ -82,7 +82,6 @@ class InMemoryLogHandler(logging.Handler):
         limit: int = 200,
         level: str | None = None,
     ) -> list[dict[str, Any]]:
-        limit = min(max(limit, 1), self.capacity)
         selected_level = level.upper() if level else None
         with self._lock:
             items = list(self._records)
@@ -90,7 +89,11 @@ class InMemoryLogHandler(logging.Handler):
             items = [item for item in items if item.id > since_id]
         if selected_level:
             items = [item for item in items if item.level == selected_level]
-        return [item.__dict__ for item in items[-limit:]]
+        # limit=0 means all retained records; positive values retain the old
+        # count-based behavior for the log table.
+        if limit > 0:
+            items = items[-min(limit, self.capacity):]
+        return [item.__dict__ for item in items]
 
     def clear(self) -> None:
         with self._lock:
@@ -145,15 +148,62 @@ def configure_logging(settings: Settings) -> None:
     )
 
 
+MAX_LOG_EXPORT_BYTES = 30 * 1024 * 1024
+
+
 def get_buffered_logs(
     *,
     since_id: int = 0,
     limit: int = 200,
     level: str | None = None,
+    since_min: int | None = None,
+    max_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
     if _memory_handler is None:
         return []
-    return _memory_handler.records(since_id=since_id, limit=limit, level=level)
+
+    # Export mode: no message-count cap; only apply the explicit byte cap.
+    export_limit = max_bytes is not None or since_min is not None or limit == 0
+    items = _memory_handler.records(
+        since_id=since_id,
+        limit=0 if export_limit else limit,
+        level=level,
+    )
+
+    if since_min is not None:
+        since_min = max(0, since_min)
+        now = datetime.now(BEIJING_TZ).replace(tzinfo=None)
+        cutoff = now - timedelta(minutes=since_min)
+        filtered: list[dict[str, Any]] = []
+        for item in items:
+            try:
+                item_time = datetime.strptime(item.get("time", ""), DATE_FORMAT)
+            except (TypeError, ValueError):
+                continue
+            if item_time >= cutoff:
+                filtered.append(item)
+        items = filtered
+
+    if max_bytes is None:
+        return items
+
+    byte_limit = min(max(1, max_bytes), MAX_LOG_EXPORT_BYTES)
+    # Prefer the newest records when the 30MB cap is reached, then restore
+    # chronological order for copying/reading.
+    selected: list[dict[str, Any]] = []
+    total = 0
+    for item in reversed(items):
+        encoded = (json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        if selected and total + len(encoded) > byte_limit:
+            break
+        if not selected and len(encoded) > byte_limit:
+            # Keep at least one record even if an individual log is oversized.
+            selected.append(item)
+            break
+        selected.append(item)
+        total += len(encoded)
+    selected.reverse()
+    return selected
 
 
 def clear_buffered_logs() -> None:

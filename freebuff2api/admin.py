@@ -414,12 +414,17 @@ async def logs(
     since_id: int = 0,
     limit: int = 200,
     level: str | None = None,
+    since_min: int | None = None,
+    max_bytes: int | None = None,
 ) -> dict[str, Any]:
     _check_admin_auth(request)
     return _api_ok(
         {
-            "items": get_buffered_logs(since_id=since_id, limit=limit, level=level),
-            "limit": limit,
+            "items": get_buffered_logs(
+                since_id=since_id, limit=limit, level=level,
+                since_min=since_min, max_bytes=max_bytes,
+            ),
+            "limit": limit if limit != 0 else None,
         }
     )
 
